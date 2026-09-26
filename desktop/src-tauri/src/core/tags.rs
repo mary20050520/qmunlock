@@ -8,7 +8,9 @@
 
 use super::{Error, Result};
 use id3::{
-    frame::{Lyrics, Picture, PictureType},
+    frame::{
+        Lyrics, Picture, PictureType, SynchronisedLyrics, SynchronisedLyricsType, TimestampFormat,
+    },
     Tag, TagLike, Version,
 };
 use serde_json::Value;
@@ -42,8 +44,6 @@ pub struct SongMeta {
     pub track_number: Option<u32>,
     /// 碟序；QQ 音乐的 `index_cd` 从 0 开始，写入标签时转为从 1 开始。
     pub disc_number: Option<u32>,
-    /// 曲库歌曲 ID，写入 QQ 音乐文件属性时需要
-    pub song_id: u64,
     /// 歌曲 MID，抓歌词需要
     pub song_mid: String,
 }
@@ -122,7 +122,6 @@ pub async fn resolve_song(song_mid: &str) -> Result<SongMeta> {
         .and_then(Value::as_u64)
         .and_then(|number| u32::try_from(number).ok())
         .map(|number| number.saturating_add(1));
-    let song_id = song.get("id").and_then(Value::as_u64).unwrap_or_default();
     if album_mid.is_empty() {
         return Err(Error::from("曲库未返回专辑 MID"));
     }
@@ -135,7 +134,6 @@ pub async fn resolve_song(song_mid: &str) -> Result<SongMeta> {
         release_date,
         track_number,
         disc_number,
-        song_id,
         song_mid: song_mid.to_owned(),
     })
 }
@@ -174,7 +172,6 @@ fn meta_from_search_item(item: &Value) -> Option<SongMeta> {
         .unwrap_or_default()
         .to_owned();
     let singers = collect_names(item.get("singer"));
-    let song_id = item.get("id").and_then(Value::as_u64).unwrap_or_default();
     Some(SongMeta {
         album_mid,
         album,
@@ -184,7 +181,6 @@ fn meta_from_search_item(item: &Value) -> Option<SongMeta> {
         release_date: String::new(),
         track_number: None,
         disc_number: None,
-        song_id,
         song_mid,
     })
 }
@@ -855,6 +851,101 @@ pub fn embed_lyrics_into_mp3(path: &Path, lyric: &str) -> Result<()> {
     Ok(())
 }
 
+/// 解析标准 LRC 的 `[mm:ss.xx]` 时间戳为毫秒。元信息标签（如 `[ar:]`）不会被当作歌词。
+fn parse_lrc_timestamp(marker: &str) -> Option<u32> {
+    let (minutes, seconds) = marker.split_once(':')?;
+    let minutes = minutes.parse::<u32>().ok()?;
+    let (seconds, fraction) = seconds.split_once('.').unwrap_or((seconds, ""));
+    let seconds = seconds.parse::<u32>().ok()?;
+    if seconds >= 60 {
+        return None;
+    }
+    let fraction = fraction.chars().take(3).collect::<String>();
+    if !fraction.is_empty() && !fraction.chars().all(|character| character.is_ascii_digit()) {
+        return None;
+    }
+    let decimals = fraction.len();
+    let fraction = fraction.parse::<u32>().unwrap_or(0);
+    let milliseconds = match decimals {
+        0 => 0,
+        1 => fraction * 100,
+        2 => fraction * 10,
+        _ => fraction,
+    };
+    minutes
+        .checked_mul(60_000)?
+        .checked_add(seconds.checked_mul(1_000)?)
+        .and_then(|value| value.checked_add(milliseconds))
+}
+
+/// 从 LRC 取出逐行的时间轴。一个歌词行有多个时间戳时会保留每一个时间点。
+fn lrc_to_timed_lines(lyric: &str) -> Vec<(u32, String)> {
+    let mut lines = Vec::new();
+    for line in lyric.lines() {
+        let mut rest = line.trim();
+        let mut timestamps = Vec::new();
+        while let Some(after_open) = rest.strip_prefix('[') {
+            let Some(end) = after_open.find(']') else {
+                break;
+            };
+            let marker = &after_open[..end];
+            let Some(timestamp) = parse_lrc_timestamp(marker) else {
+                break;
+            };
+            timestamps.push(timestamp);
+            rest = after_open[end + 1..].trim_start();
+        }
+        if rest.is_empty() {
+            continue;
+        }
+        lines.extend(
+            timestamps
+                .into_iter()
+                .map(|timestamp| (timestamp, rest.to_owned())),
+        );
+    }
+    lines.sort_by_key(|(timestamp, _)| *timestamp);
+    lines
+}
+
+/// 将带时间轴的 LRC 写入 MP3 的 ID3 SYLT 帧。
+///
+/// 这是一个兼容性增强项：部分车机和播放器可用它滚动歌词，但许多设备只认同名 `.lrc`，
+/// 因此始终保留外部 LRC，且由界面默认关闭该选项。
+pub fn embed_synced_lyrics_into_mp3(path: &Path, lyric: &str) -> Result<()> {
+    let content = lrc_to_timed_lines(lyric);
+    if content.is_empty() {
+        return Err(Error::from("未找到带时间轴的 LRC 歌词，未写入同步歌词"));
+    }
+    let mut tag = match Tag::read_from_path(path) {
+        Ok(tag) => tag,
+        Err(id3::Error {
+            kind: id3::ErrorKind::NoTag,
+            ..
+        }) => Tag::new(),
+        Err(error) => return Err(Error::from(format!("读取 MP3 标签失败：{error}"))),
+    };
+    tag.remove("SYLT");
+    tag.add_frame(SynchronisedLyrics {
+        lang: "eng".to_owned(),
+        timestamp_format: TimestampFormat::Ms,
+        content_type: SynchronisedLyricsType::Lyrics,
+        description: String::new(),
+        content,
+    });
+    tag.write_to_path(path, Version::Id3v23)
+        .map_err(|error| Error::from(format!("写入 MP3 同步歌词失败：{error}")))?;
+    let check = Tag::read_from_path(path)
+        .map_err(|error| Error::from(format!("MP3 同步歌词写入后无法校验：{error}")))?;
+    if !check
+        .synchronised_lyrics()
+        .any(|item| item.timestamp_format == TimestampFormat::Ms && !item.content.is_empty())
+    {
+        return Err(Error::from("MP3 同步歌词写入校验失败：未找到时间轴"));
+    }
+    Ok(())
+}
+
 fn temporary_path(path: &Path) -> PathBuf {
     let mut name = path
         .file_name()
@@ -959,154 +1050,6 @@ pub fn set_finder_icon(path: &Path, image: &[u8]) -> Result<()> {
     }
 }
 
-/// 读取 FLAC 的 STREAMINFO，返回 (采样率, 位深)。
-/// 目前仅 macOS 的 QQ 属性写入逻辑使用，其他平台不参与编译以免产生 dead_code。
-#[cfg(target_os = "macos")]
-pub fn flac_stream_info(path: &Path) -> Option<(u32, u32)> {
-    let mut file = std::fs::File::open(path).ok()?;
-    let blocks = read_blocks(&mut file).ok()?;
-    let stream_info = blocks.iter().find(|(kind, _)| *kind == 0)?;
-    parse_stream_info(&stream_info.1)
-}
-
-#[cfg(any(target_os = "macos", test))]
-fn parse_stream_info(data: &[u8]) -> Option<(u32, u32)> {
-    if data.len() < 18 {
-        return None;
-    }
-    let bits = u64::from_be_bytes(data[10..18].try_into().ok()?);
-    let sample_rate = (bits >> 44) as u32;
-    let depth = (((bits >> 36) & 0x1F) as u32) + 1;
-    if sample_rate == 0 {
-        None
-    } else {
-        Some((sample_rate, depth))
-    }
-}
-
-/// QQ 音乐写在本机文件上的扩展属性。这是 macOS 独有的 xattr 机制，其他平台没有对应概念。
-#[cfg(target_os = "macos")]
-mod qq_attrs {
-    use super::*;
-    use plist::{Dictionary, Uid, Value};
-
-    const KEY_INFO: &str = "com.tencent.qqmusic.SongInfoFileAttribute";
-    const KEY_QUALITY: &str = "com.tencent.qqmusic.songQuality";
-    const KEY_RATE: &str = "com.tencent.qqmusic.songRate";
-    /// 实测：QQ 音乐写在该属性里的 song_Type 固定为 13
-    const SONG_TYPE: u64 = 13;
-
-    /// 依据音频参数推断 songQuality / songRate。
-    /// 实测样本：192kHz/24bit 母带 = (7, 204)；44.1kHz/16bit = (2, 7)。未匹配到档位时不写。
-    fn quality_markers(sample_rate: u32, depth: u32) -> Option<(u32, u32)> {
-        match (sample_rate, depth) {
-            (rate, 24) if rate >= 176_400 => Some((7, 204)),
-            (44_100, 16) => Some((2, 7)),
-            _ => None,
-        }
-    }
-
-    /// 构造 NSKeyedArchiver 结构（与 QQ 音乐写入的格式一致）。
-    pub(super) fn info_archive(meta: &SongMeta) -> Result<Vec<u8>> {
-        let singer = meta
-            .singers
-            .split('、')
-            .next()
-            .unwrap_or_default()
-            .to_owned();
-
-        let mut song = Dictionary::new();
-        song.insert("$class".into(), Value::Uid(Uid::new(5)));
-        song.insert("song_Album".into(), Value::Uid(Uid::new(4)));
-        song.insert("song_ID".into(), Value::from(meta.song_id));
-        song.insert("song_Name".into(), Value::Uid(Uid::new(2)));
-        song.insert("song_Singer".into(), Value::Uid(Uid::new(3)));
-        song.insert("song_Type".into(), Value::from(SONG_TYPE));
-
-        let mut class = Dictionary::new();
-        class.insert(
-            "$classes".into(),
-            Value::Array(vec![
-                Value::String("SongInfoInFileAttribute".into()),
-                Value::String("NSObject".into()),
-            ]),
-        );
-        class.insert(
-            "$classname".into(),
-            Value::String("SongInfoInFileAttribute".into()),
-        );
-
-        let objects = vec![
-            Value::String("$null".into()),
-            Value::Dictionary(song),
-            Value::String(meta.title.clone()),
-            Value::String(singer),
-            Value::String(meta.album.clone()),
-            Value::Dictionary(class),
-        ];
-
-        let mut top = Dictionary::new();
-        top.insert("root".into(), Value::Uid(Uid::new(1)));
-
-        let mut document = Dictionary::new();
-        document.insert("$version".into(), Value::from(100_000u64));
-        document.insert("$archiver".into(), Value::String("NSKeyedArchiver".into()));
-        document.insert("$top".into(), Value::Dictionary(top));
-        document.insert("$objects".into(), Value::Array(objects));
-
-        let mut buffer = Vec::new();
-        Value::Dictionary(document)
-            .to_writer_binary(&mut buffer)
-            .map_err(|error| Error::from(format!("生成 QQ 音乐属性数据失败：{error}")))?;
-        Ok(buffer)
-    }
-
-    fn write_xattr(path: &Path, key: &str, value: &[u8]) -> Result<()> {
-        let hex: String = value.iter().map(|byte| format!("{byte:02x}")).collect();
-        let output = std::process::Command::new("/usr/bin/xattr")
-            .arg("-wx")
-            .arg(key)
-            .arg(&hex)
-            .arg(path)
-            .output()?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(Error::from(format!(
-                "写入 {key} 失败：{}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )))
-        }
-    }
-
-    pub fn write(path: &Path, meta: &SongMeta) -> Result<String> {
-        write_xattr(path, KEY_INFO, &info_archive(meta)?)?;
-        let mut note = "已写入 QQ 音乐文件属性".to_owned();
-        match flac_stream_info(path).and_then(|(rate, depth)| quality_markers(rate, depth)) {
-            Some((quality, rate)) => {
-                write_xattr(path, KEY_QUALITY, &quality.to_le_bytes())?;
-                write_xattr(path, KEY_RATE, &rate.to_le_bytes())?;
-                note.push_str("（含音质标记）");
-            }
-            None => note.push_str("（音质档位未匹配已知值，已跳过 quality/rate）"),
-        }
-        Ok(note)
-    }
-}
-
-/// 写入 QQ 音乐文件属性；其他平台返回空字符串（该机制只在 macOS 存在）。
-pub fn write_qq_attributes(path: &Path, meta: &SongMeta) -> Result<String> {
-    #[cfg(target_os = "macos")]
-    {
-        qq_attrs::write(path, meta)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (path, meta);
-        Ok(String::new())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1155,7 +1098,6 @@ mod tests {
             release_date: "2024-05-01".into(),
             track_number: Some(3),
             disc_number: Some(2),
-            song_id: 1,
             song_mid: "song-mid".into(),
         };
 
@@ -1198,62 +1140,35 @@ mod tests {
     }
 
     #[test]
+    fn embeds_timed_lyrics_into_mp3() {
+        let dir = std::env::temp_dir().join(format!("qmunlock-sylt-mp3-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("sample.mp3");
+        std::fs::write(&file, b"MP3-AUDIO-DATA").unwrap();
+
+        embed_synced_lyrics_into_mp3(
+            &file,
+            "[ar:测试歌手]\n[00:01.05]第一行\n[00:02.500][00:03.00]第二行",
+        )
+        .unwrap();
+
+        let tag = Tag::read_from_path(&file).unwrap();
+        let timed = tag.synchronised_lyrics().next().unwrap();
+        assert_eq!(timed.timestamp_format, TimestampFormat::Ms);
+        assert_eq!(
+            timed.content,
+            vec![
+                (1_050, "第一行".to_owned()),
+                (2_500, "第二行".to_owned()),
+                (3_000, "第二行".to_owned()),
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn jpeg_size_parsing() {
         assert_eq!(jpeg_dimensions(&tiny_jpeg()), (32, 16));
-    }
-
-    #[test]
-    fn parses_stream_info_fields() {
-        let bits: u64 = (192_000u64 << 44) | (1u64 << 41) | (23u64 << 36) | 480_000;
-        let mut data = vec![0u8; 34];
-        data[10..18].copy_from_slice(&bits.to_be_bytes());
-        assert_eq!(parse_stream_info(&data), Some((192_000, 24)));
-        assert_eq!(parse_stream_info(&[0u8; 8]), None);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn builds_qq_attribute_archive() {
-        let meta = SongMeta {
-            album_mid: "000CLxSh3wxvBt".into(),
-            album: "启示录".into(),
-            album_singers: "G.E.M.邓紫棋".into(),
-            title: "GLORIA".into(),
-            singers: "G.E.M.邓紫棋、某某".into(),
-            release_date: "2022-09-23".into(),
-            track_number: Some(1),
-            disc_number: Some(1),
-            song_id: 370_870_352,
-            song_mid: "001xM7yM3VfJqK".into(),
-        };
-        let bytes = qq_attrs::info_archive(&meta).unwrap();
-        let value = plist::Value::from_reader(std::io::Cursor::new(&bytes)).unwrap();
-        let root = value.as_dictionary().unwrap();
-        assert_eq!(
-            root.get("$archiver").and_then(|item| item.as_string()),
-            Some("NSKeyedArchiver")
-        );
-        let objects = root
-            .get("$objects")
-            .and_then(|item| item.as_array())
-            .unwrap();
-        let song = objects[1].as_dictionary().unwrap();
-        assert_eq!(
-            song.get("song_ID")
-                .and_then(|item| item.as_unsigned_integer()),
-            Some(370_870_352)
-        );
-        assert_eq!(
-            song.get("song_Type")
-                .and_then(|item| item.as_unsigned_integer()),
-            Some(13)
-        );
-        let index = song
-            .get("song_Singer")
-            .and_then(|item| item.as_uid())
-            .unwrap()
-            .get() as usize;
-        assert_eq!(objects[index].as_string(), Some("G.E.M.邓紫棋"));
     }
 
     #[test]
@@ -1392,7 +1307,6 @@ mod tests {
             release_date: "2022-09-23".into(),
             track_number: Some(1),
             disc_number: Some(1),
-            song_id: 1,
             song_mid: "mid".into(),
         };
         assert!(matches_embedded_tags(&meta, &found), "同名同歌手应匹配");
@@ -1499,7 +1413,6 @@ mod tests {
             release_date: "2022-09-23".into(),
             track_number: Some(1),
             disc_number: Some(1),
-            song_id: 1,
             song_mid: "a".into(),
         };
         let right = SongMeta {
@@ -1534,7 +1447,6 @@ mod tests {
                     release_date: "2022-09-23".into(),
                     track_number: Some(1),
                     disc_number: Some(1),
-                    song_id: 2,
                     song_mid: "b".into(),
                 },
             ],

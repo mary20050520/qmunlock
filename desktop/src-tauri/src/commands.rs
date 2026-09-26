@@ -1,6 +1,6 @@
 use crate::core::{
-    self, credentials, decrypt, ekey, qq_library, tags, DecryptOptions, DecryptResult, Error,
-    FileInfo, ProgressEvent,
+    self, credentials, decrypt, ekey, tags, DecryptOptions, DecryptResult, Error, FileInfo,
+    ProgressEvent,
 };
 use std::path::{Path, PathBuf};
 use tauri::Emitter;
@@ -23,18 +23,6 @@ pub fn open_full_disk_access_settings() -> std::result::Result<(), String> {
 #[tauri::command]
 pub fn os_platform() -> String {
     std::env::consts::OS.to_owned()
-}
-
-/// QQ 音乐本地库链接状态（待办数量、数据库是否找到、客户端是否在运行）。
-#[tauri::command]
-pub fn library_status() -> qq_library::LibraryStatus {
-    qq_library::status()
-}
-
-/// 补做所有待办的 QQ 音乐库链接。
-#[tauri::command]
-pub fn flush_library_links() -> String {
-    qq_library::flush_pending()
 }
 
 #[tauri::command]
@@ -247,7 +235,7 @@ async fn decrypt_one(
             let song_mid = decrypt::info(input)
                 .map(|footer| footer.song_mid)
                 .unwrap_or_default();
-            let (cover, library) = if options.embed_cover || options.link_library {
+            let cover = if options.embed_cover {
                 let notes = decorate_output(
                     app,
                     &output,
@@ -261,9 +249,9 @@ async fn decrypt_one(
                     },
                 )
                 .await;
-                (notes.cover, notes.library)
+                notes.cover
             } else {
-                (None, None)
+                None
             };
             let lyrics = if options.fetch_lyrics {
                 Some(
@@ -289,7 +277,6 @@ async fn decrypt_one(
                 error: None,
                 cover,
                 lyrics,
-                library,
             }
         }
         Err(error) => DecryptResult {
@@ -300,7 +287,6 @@ async fn decrypt_one(
             error: Some(error.to_string()),
             cover: None,
             lyrics: None,
-            library: None,
         },
     }
 }
@@ -336,7 +322,7 @@ fn unique_copy_target(input: &Path, dir: &Path) -> PathBuf {
     dest
 }
 
-/// 普通音频通道：不解密，只做封面 / 歌词 / 曲库增强。
+/// 普通音频通道：不解密，只做封面 / 歌词增强。
 ///
 /// 曲库信息按文件名（去掉扩展名）检索；`plain_copy` 为真时先复制副本再改副本，
 /// 否则原位写入。macOS 独有的访达图标与 QQ 音乐属性仍由 cfg 门控，其他平台自动跳过。
@@ -472,44 +458,12 @@ async fn enhance_plain(
             None
         };
 
-        // 「曲库」= QQ 音乐扩展属性 + 本地库链接（访达图标已归「封面」）
-        let library = if options.link_library {
-            emit_frac(
-                app,
-                "library",
-                &input_name,
-                file_index,
-                file_total,
-                FRAC_LIBRARY,
-                "正在链接 QQ 音乐本地库",
-            );
-            if cfg!(target_os = "macos") {
-                match tags::write_qq_attributes(&target, &meta) {
-                    Ok(note) if !note.is_empty() => notes.push("QQ 属性".to_owned()),
-                    Ok(_) => {}
-                    Err(error) => notes.push(format!("QQ 属性未写入：{error}")),
-                }
-            }
-            let entry = qq_library::LibraryEntry {
-                file: target.display().to_string(),
-                song_id: meta.song_id,
-                title: meta.title.clone(),
-                singer: meta.singers.clone(),
-                album: meta.album.clone(),
-                album_mid: meta.album_mid.clone(),
-            };
-            let note = qq_library::link_or_queue(&entry);
-            (!note.is_empty()).then_some(short_library_note(&note))
-        } else {
-            None
-        };
-
-        Ok::<_, Error>((target, notes, lyrics, library))
+        Ok::<_, Error>((target, notes, lyrics))
     }
     .await;
 
     match run {
-        Ok((target, notes, lyrics, library)) => DecryptResult {
+        Ok((target, notes, lyrics)) => DecryptResult {
             input: input_name,
             output: Some(target.display().to_string()),
             ok: true,
@@ -517,7 +471,6 @@ async fn enhance_plain(
             error: None,
             cover: (!notes.is_empty()).then(|| notes.join(" · ")),
             lyrics,
-            library,
         },
         Err(error) => DecryptResult {
             input: input_name,
@@ -527,7 +480,6 @@ async fn enhance_plain(
             error: Some(error.to_string()),
             cover: None,
             lyrics: None,
-            library: None,
         },
     }
 }
@@ -535,18 +487,6 @@ async fn enhance_plain(
 /// 输出后的增强处理结果。
 struct EnhanceNotes {
     cover: Option<String>,
-    library: Option<String>,
-}
-
-/// 把 qq_library 返回的长说明压缩成界面上能一眼扫完的短标签。
-fn short_library_note(note: &str) -> String {
-    if note.contains("稍后补做") {
-        "曲库待补做".to_owned()
-    } else if note.contains("未完成") || note.contains("失败") {
-        "曲库失败".to_owned()
-    } else {
-        "曲库".to_owned()
-    }
 }
 
 /// 批次位置：当前是第几个文件、共几个文件。
@@ -561,10 +501,8 @@ struct BatchPos {
 /// 输出后的增强处理。
 ///
 /// 职责划分：
-/// - 「封面」= 内嵌封面（仅 FLAC）+ 访达自定义图标（仅 macOS）。内嵌封面只存在于
-///   文件内部、访达里看不见，用户真正「看到封面」的是访达图标，所以二者必须同属
-///   一个开关，否则勾了封面会像没生效；
-/// - 「曲库」= QQ 音乐扩展属性 + 本地库链接（均仅 macOS）。
+/// - 「封面」= FLAC / MP3 内嵌封面 + 访达自定义图标（仅 macOS）。Apple Music 与
+///   Quick Look 读取前者；访达图标则让不支持内嵌封面的格式也能在文件夹中识别。
 ///
 /// 每一步都是尽力而为：失败只记录到任务报告，不影响已经完成的解密结果。
 async fn decorate_output(
@@ -591,7 +529,6 @@ async fn decorate_output(
         Err(error) => {
             return EnhanceNotes {
                 cover: options.embed_cover.then(|| format!("未写入封面：{error}")),
-                library: options.link_library.then(|| format!("曲库未完成：{error}")),
             }
         }
     };
@@ -644,41 +581,8 @@ async fn decorate_output(
         }
     }
 
-    let library = if options.link_library {
-        emit_frac(
-            app,
-            "library",
-            input_name,
-            pos.index,
-            pos.total,
-            FRAC_LIBRARY,
-            "正在链接 QQ 音乐本地库",
-        );
-        if cfg!(target_os = "macos") {
-            // QQ 音乐扩展属性是 macOS 独有的文件机制，其他平台不执行
-            match tags::write_qq_attributes(output, &meta) {
-                Ok(note) if !note.is_empty() => notes.push("QQ 属性".to_owned()),
-                Ok(_) => {}
-                Err(error) => notes.push(format!("QQ 属性未写入：{error}")),
-            }
-        }
-        let entry = qq_library::LibraryEntry {
-            file: output.display().to_string(),
-            song_id: meta.song_id,
-            title: meta.title.clone(),
-            singer: meta.singers.clone(),
-            album: meta.album.clone(),
-            album_mid: meta.album_mid.clone(),
-        };
-        let note = qq_library::link_or_queue(&entry);
-        (!note.is_empty()).then_some(short_library_note(&note))
-    } else {
-        None
-    };
-
     EnhanceNotes {
         cover: (!notes.is_empty()).then(|| notes.join(" · ")),
-        library,
     }
 }
 
@@ -726,6 +630,16 @@ async fn write_lyrics(
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("mp3"))
             {
                 match tags::embed_lyrics_into_mp3(output, &lyric) {
+                    Ok(()) if options.embed_synced_lyrics => {
+                        match tags::embed_synced_lyrics_into_mp3(output, &lyric) {
+                            Ok(()) => {
+                                format!("歌词 {name} · 已嵌入 MP3 · 已嵌入同步歌词（实验性）")
+                            }
+                            Err(error) => {
+                                format!("歌词 {name} · 已嵌入 MP3 · 同步歌词失败：{error}")
+                            }
+                        }
+                    }
                     Ok(()) => format!("歌词 {name} · 已嵌入 MP3"),
                     Err(error) => format!("歌词 {name} · MP3 内嵌失败：{error}"),
                 }
@@ -809,7 +723,6 @@ const FRAC_DECRYPT_SPAN: f64 = 0.60;
 const FRAC_TRANSCODE: f64 = 0.82;
 const FRAC_COVER: f64 = 0.88;
 const FRAC_LYRICS: f64 = 0.93;
-const FRAC_LIBRARY: f64 = 0.97;
 
 fn expand_paths(paths: Vec<String>) -> Vec<PathBuf> {
     let mut files = Vec::new();

@@ -3,7 +3,6 @@ pub mod decrypt;
 pub mod ekey;
 pub mod footer;
 pub mod qmc2;
-pub mod qq_library;
 pub mod tags;
 
 use serde::{Deserialize, Serialize};
@@ -45,8 +44,6 @@ pub struct DecryptResult {
     pub cover: Option<String>,
     /// 歌词处理结果（仅在启用抓歌词时有值）
     pub lyrics: Option<String>,
-    /// QQ 音乐库链接结果（仅在启用该选项时有值）
-    pub library: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -78,9 +75,10 @@ pub struct DecryptOptions {
     /// 歌词输出目录，留空则与音频同目录
     #[serde(default)]
     pub lyrics_dir: Option<String>,
-    /// 输出后把文件链接到 QQ 音乐本地库（仅 macOS 有效，需退出 QQ 音乐）
+    /// 是否额外把带时间轴的 LRC 写入 MP3 的 SYLT 标签（实验性）。
+    /// 默认关闭：车机与播放器对该格式的支持差异很大，同名 LRC 始终会保留。
     #[serde(default)]
-    pub link_library: bool,
+    pub embed_synced_lyrics: bool,
     /// 普通音频是否先复制副本再增强（false 表示原位写入）
     #[serde(default)]
     pub plain_copy: bool,

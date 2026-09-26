@@ -6,7 +6,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import appIcon from "../src-tauri/icons/icon.svg";
-import { Check, ChevronRight, LoaderCircle, Moon, Plus, RefreshCw, Sun, X } from "lucide-react";
+import { Check, ChevronRight, Github, LoaderCircle, Moon, Plus, RefreshCw, Sun, X } from "lucide-react";
 import "./styles.css";
 
 window.addEventListener("error", (event) => {
@@ -46,17 +46,9 @@ type DecryptResult = {
   error?: string;
   cover?: string;
   lyrics?: string;
-  library?: string;
 };
 
 type JobRow = { tab: Ctx; result: DecryptResult };
-
-type LibraryStatus = {
-  pending: number;
-  databaseFound: boolean;
-  appRunning: boolean;
-  message?: string;
-};
 
 type OutputMode = "original" | "mp3";
 type KeyMode = "automatic" | "manual";
@@ -89,7 +81,6 @@ const PHASE_LABEL: Record<string, string> = {
   transcode: "转码",
   cover: "封面",
   lyrics: "歌词",
-  library: "曲库",
   complete: "完成",
 };
 
@@ -130,9 +121,8 @@ export default function App() {
   const [dragActive, setDragActive] = useState(false);
   const [embedCover, setEmbedCover] = useState(true);
   const [fetchLyrics, setFetchLyrics] = useState(false);
-  const [linkLibrary, setLinkLibrary] = useState(true);
+  const [embedSyncedLyrics, setEmbedSyncedLyrics] = useState(false);
   const [plainCopy, setPlainCopy] = useState(false);
-  const [libraryStatus, setLibraryStatus] = useState<LibraryStatus>();
   const [theme, setTheme] = useState<Theme>(initialTheme);
   const [noticeBad, setNoticeBad] = useState(false);
   const permissionSettingsOpened = useRef(false);
@@ -199,29 +189,16 @@ export default function App() {
     });
   }, []);
 
-  const refreshLibraryStatus = useCallback(async () => {
-    try {
-      setLibraryStatus(await invoke<LibraryStatus>("library_status"));
-    } catch {
-      setLibraryStatus(undefined);
-    }
-  }, []);
-
-  useEffect(() => {
-    void refreshLibraryStatus();
-  }, [refreshLibraryStatus]);
-
-  // 窗口重新获得焦点时自动刷新登录态与曲库状态。
+  // 窗口重新获得焦点时自动刷新登录态。
   // 顶栏原本有个手动刷新按钮，但用户在外部登录 QQ 音乐后并不知道要点它，
   // 按钮也解释不清自己干什么，于是改成聚焦即刷新，按钮移除。
   useEffect(() => {
     const onFocus = () => {
       void refreshCredentials();
-      void refreshLibraryStatus();
     };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
-  }, [refreshCredentials, refreshLibraryStatus]);
+  }, [refreshCredentials]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -331,19 +308,6 @@ export default function App() {
     setProgress(undefined);
   };
 
-  const flushLibraryLinks = async () => {
-    setNotice(undefined);
-    setNoticeBad(false);
-    try {
-      const message = await invoke<string>("flush_library_links");
-      if (message) setNotice(message);
-      await refreshLibraryStatus();
-    } catch (error) {
-      setNotice(`补做失败：${String(error)}`);
-      setNoticeBad(true);
-    }
-  };
-
   const encPaths = useMemo(
     () => paths.filter((path) => fileInfo[path]?.kind === "enc"),
     [paths, fileInfo],
@@ -386,7 +350,7 @@ export default function App() {
           embed_cover: embedCover,
           fetch_lyrics: fetchLyrics,
           lyrics_dir: fetchLyrics && lyricsDir ? lyricsDir : null,
-          link_library: isMac ? linkLibrary : false,
+          embed_synced_lyrics: fetchLyrics && embedSyncedLyrics,
           plain_copy: ctx === "plain" ? plainCopy : false,
         },
       });
@@ -405,7 +369,6 @@ export default function App() {
     } finally {
       setRunning(false);
       void refreshCredentials();
-      void refreshLibraryStatus();
     }
   };
 
@@ -458,6 +421,16 @@ export default function App() {
           >
             {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
           </button>
+          <a
+            className="ico-btn"
+            href="https://github.com/mary20050520/qmunlock"
+            target="_blank"
+            rel="noreferrer"
+            title="GitHub"
+            aria-label="在 GitHub 打开 QM Unlock"
+          >
+            <Github size={14} />
+          </a>
         </div>
         <div className="topline" style={{ width: running && progress ? `${progress.percent}%` : 0 }} />
       </header>
@@ -548,7 +521,7 @@ export default function App() {
                   const job = jobByPath.get(path);
                   const bad = info?.supported === false || job?.ok === false;
                   const detail = job
-                    ? [job.cover, job.lyrics, job.library, job.error].filter(Boolean).join(" · ")
+                    ? [job.cover, job.lyrics, job.error].filter(Boolean).join(" · ")
                     : "";
                   return (
                     <div className={`qrow${active ? " on" : ""}`} key={path}>
@@ -645,10 +618,10 @@ export default function App() {
               <span className="box"><Check size={9} strokeWidth={4} /></span>
               <span>歌词</span>
             </button>
-            {isMac && (
-              <button className="opt" aria-pressed={linkLibrary} onClick={() => setLinkLibrary((v) => !v)}>
+            {fetchLyrics && (
+              <button className="opt subopt" aria-pressed={embedSyncedLyrics} onClick={() => setEmbedSyncedLyrics((v) => !v)}>
                 <span className="box"><Check size={9} strokeWidth={4} /></span>
-                <span>曲库</span>
+                <span>嵌入同步歌词（实验性）</span>
               </button>
             )}
           </div>
@@ -670,13 +643,6 @@ export default function App() {
               </button>
             )}
           </div>
-
-          {isMac && (libraryStatus?.pending ?? 0) > 0 && (
-            <button className="alert" onClick={() => void flushLibraryLinks()} title={libraryStatus?.appRunning ? "需先退出 QQ 音乐" : "点击补做"}>
-              <i />
-              <span>{libraryStatus?.pending} 首待链接{libraryStatus?.appRunning ? " · 需退出 QQ 音乐" : ""}</span>
-            </button>
-          )}
 
         </aside>
       </div>

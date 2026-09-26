@@ -11,8 +11,6 @@ pub fn run() {
             commands::get_file_info,
             commands::scan_paths,
             commands::decrypt_paths,
-            commands::library_status,
-            commands::flush_library_links,
         ])
         .run(tauri::generate_context!())
         .expect("error while running QM Unlock");
