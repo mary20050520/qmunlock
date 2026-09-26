@@ -1,4 +1,13 @@
 #!/usr/bin/env bash
+# CI 用的 macOS 打包入口：解析 target / arch / 版本号 / 产物路径，
+# 然后把实际打包委托给 make_dmg_styled.sh（本地手动打包用的是同一个脚本）。
+#
+# 用法： ./scripts/sign-and-package-macos.sh <rust-target>
+# 例：   ./scripts/sign-and-package-macos.sh aarch64-apple-darwin
+#
+# 之所以只保留一层薄封装：以前这里自己用 hdiutil create -srcfolder 打了一个
+# 无背景、无图标布局的普通 DMG，和本地脚本产出的样式化 DMG 不一致。
+# 现在两条路径合一，签名、嵌套代码校验、卷图标、背景与布局、回读校验全部只有一份实现。
 set -euo pipefail
 
 target="${1:?usage: sign-and-package-macos.sh <rust-target>}"
@@ -12,6 +21,8 @@ case "$target" in
     ;;
 esac
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 bundle_dir="src-tauri/target/$target/release/bundle"
 app_path="$(find "$bundle_dir/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
 if [[ -z "$app_path" ]]; then
@@ -23,62 +34,13 @@ app_name="$(basename "$app_path" .app)"
 version="$(node -p 'require("./package.json").version')"
 dmg_dir="$bundle_dir/dmg"
 dmg_path="$dmg_dir/${app_name}_${version}_${arch}.dmg"
-staging_dir="$(mktemp -d -t qmunlock-dmg-stage)"
-staged_app_path="$staging_dir/$app_name.app"
-
-ditto "$app_path" "$staged_app_path"
-ln -s /Applications "$staging_dir/Applications"
-cp scripts/DMG_INSTALL_ZH-CN.txt "$staging_dir/① 安装与故障排查.txt"
-app_path="$staged_app_path"
-
-echo "Ad-hoc signing $app_path"
-codesign --force --deep --sign - --timestamp=none "$app_path"
-
-echo "Verifying app bundle signature"
-codesign --verify --deep --strict --verbose=4 "$app_path"
-
-echo "Verifying nested frameworks, helpers, dylibs, and executables"
-for nested_root in \
-  "$app_path/Contents/MacOS" \
-  "$app_path/Contents/Frameworks" \
-  "$app_path/Contents/Helpers" \
-  "$app_path/Contents/PlugIns" \
-  "$app_path/Contents/XPCServices"; do
-  [[ -d "$nested_root" ]] || continue
-  while IFS= read -r -d '' nested_code; do
-    if [[ -f "$nested_code" ]]; then
-      if ! file -b "$nested_code" | grep -q 'Mach-O'; then
-        continue
-      fi
-    fi
-    codesign --verify --deep --strict --verbose=4 "$nested_code"
-  done < <(
-    find "$nested_root" \
-      \( -type d \( -name '*.app' -o -name '*.framework' \) -o \
-         -type f \( -name '*.dylib' -o -perm -111 \) \) \
-      -print0
-  )
-done
 
 mkdir -p "$dmg_dir"
-echo "Creating DMG from the verified app bundle"
-hdiutil create \
-  -volname "$app_name" \
-  -srcfolder "$staging_dir" \
-  -ov \
-  -format UDZO \
-  "$dmg_path"
-hdiutil verify "$dmg_path"
+echo "Packaging $app_path"
+echo "         -> $dmg_path"
 
-mount_dir="$(mktemp -d -t qmunlock-dmg-verify)"
-cleanup() {
-  hdiutil detach "$mount_dir" -force >/dev/null 2>&1 || true
-  rmdir "$mount_dir" >/dev/null 2>&1 || true
-}
-trap cleanup EXIT
-
-echo "Verifying the app after DMG creation"
-hdiutil attach -readonly -nobrowse -mountpoint "$mount_dir" "$dmg_path" >/dev/null
-codesign --verify --deep --strict --verbose=4 "$mount_dir/$app_name.app"
+# 打包引擎：ad-hoc 签名、嵌套代码校验、makehybrid、卷图标、清 FinderInfo、
+# 转 UDZO、只读回读校验（含 .DS_Store 布局参数），全在 make_dmg_styled.sh 里。
+"$script_dir/make_dmg_styled.sh" "$app_path" "$dmg_path"
 
 echo "Created and verified $dmg_path"

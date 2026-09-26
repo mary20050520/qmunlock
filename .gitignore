@@ -14,6 +14,15 @@ desktop/node_modules/
 desktop/dist/
 desktop/src-tauri/target/
 
+# 本地打包产物（.app / .dmg / zip）
+dist/
+
+# QQ 音乐本地库备份（含个人音乐库数据，切勿提交）
+backups/
+
+# 本机构建加速配置（可选，含镜像源，不需要可删除）
+desktop/src-tauri/.cargo/
+
 # macOS
 .DS_Store
 
@@ -40,3 +49,7 @@ notes/captures.jsonl
 references/
 tests/fixtures/ekey_*.txt
 tests/fixtures/mgg_head_*.bin
+
+# 第三方样例 DMG（只用来派生 .DS_Store 布局模板，体积大且非本项目产物）
+# 派生结果已固化为 desktop/scripts/dmg-template.DS_Store，构建不再需要这个样例
+样例.dmg
