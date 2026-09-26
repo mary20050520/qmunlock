@@ -14,10 +14,10 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/qmunlock-desktop-macos.png" width="880" alt="QM Unlock macOS 界面">
+  <img src="docs/assets/qmunlock-banner-macos.png" width="920" alt="QM Unlock 在 macOS 上解密并完善 MP3 信息">
 </p>
 
-<p align="center"><sub>macOS 界面示意。拖入文件、选择输出方式，即可开始处理。</sub></p>
+<p align="center"><sub>macOS 实测界面：解密队列、MP3 转换、封面、歌词、实验性同步歌词与输出目录。</sub></p>
 
 QM Unlock 是一个本地运行的 Rust + Tauri 桌面工具，用于处理带 **musicex V1 footer** 的 QQ 音乐下载文件。它支持批量拖放、自动或手动 ekey、原格式输出与 MP3 转换，也能为 MP3 补齐封面、歌词和基础音乐标签。
 
@@ -70,12 +70,12 @@ QM Unlock 会读取 QQ 音乐的本地登录信息来自动获取 ekey。macOS �
 
 ## 兼容性与实测基线
 
-QQ 音乐客户端的内部存储会变化；下表是已验证的基线，而不是对所有历史版本的承诺。
+QQ 音乐客户端的内部存储会变化；下表记录各平台最后一次实际验证的版本，不代表对所有历史版本的承诺。
 
-| 平台 | 已验证 QQ 音乐版本 | 已验证输入 | 结果 |
+| 平台 | 最后实测日期 | 已验证 QQ 音乐版本 | 已验证范围 |
 | --- | --- | --- | --- |
-| macOS | `11.8.1` | `.mgg` / `.mflac` / `.mmp4`（musicex V1） | 可自动读取登录状态并完成解密、原格式输出与 MP3 转换。 |
-| Windows | `22.5.2` | `.mgg` / `.mflac` / `.mmp4`（musicex V1） | 可完成解密与转换；自动读取依赖 QQ 音乐进程及相同权限级别。 |
+| macOS（Apple Silicon） | `2026-09-26` | `11.10.0`（`73282`） | `.mgg` / `.mflac` / `.mmp4`（musicex V1）的自动 ekey、解密、MP3 转换，以及封面、歌词和 MP3 标签写入。 |
+| Windows x64 | `2026-08-25` | `22.5.2` | `.mgg` / `.mflac` / `.mmp4`（musicex V1）的解密与转换；自动读取依赖 QQ 音乐进程及相同权限级别。 |
 
 当前开发分支已在 macOS Apple Silicon、macOS Intel 和 Windows x64 上完成构建验证。QQ 音乐更新后若自动获取失败，优先重新登录客户端并刷新状态；仍不行时改用手动 ekey。
 
