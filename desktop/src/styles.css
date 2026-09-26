@@ -417,6 +417,10 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--mint); outl
 .keyrow { display: flex; align-items: center; gap: 7px; margin-top: 10px; font-size: 11px; color: var(--ink2); }
 .keyrow i { width: 5px; height: 5px; border-radius: 50%; background: var(--mint); flex: 0 0 5px; }
 .keyrow i.bad { background: var(--gold); }
+.keyrow .mono { min-width: 0; flex: 1; }
+.key-refresh { display: grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 1px solid var(--rule); border-radius: 4px; background: transparent; color: var(--ink2); }
+.key-refresh:hover { color: var(--ink); background: var(--raised2); }
+.key-error { margin: 8px 0 0; color: var(--gold); font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
 .keyfield {
   display: flex;
   align-items: center;

@@ -61,12 +61,33 @@ mod macos {
     use super::*;
     use plist::Value;
     use std::io::Cursor;
+    use std::path::Path;
 
     pub fn load() -> Result<Credentials> {
         let home = dirs::home_dir().ok_or("找不到用户目录")?;
-        let path = home.join("Library/Containers/com.tencent.QQMusicMac/Data/Library/Preferences/com.tencent.QQMusicMac.plist");
-        let outer = Value::from_file(&path)
-            .map_err(|e| Error::from(format!("无法读取 QQ 音乐 plist: {e}")))?;
+        let paths = [
+            home.join("Library/Containers/com.tencent.QQMusicMac/Data/Library/Preferences/com.tencent.QQMusicMac.plist"),
+            home.join("Library/Preferences/com.tencent.QQMusicMac.plist"),
+        ];
+        let mut failures = Vec::new();
+        for path in &paths {
+            match load_from_file(path) {
+                Ok(credentials) => return Ok(credentials),
+                Err(error) => failures.push(format!("{}: {error}", path.display())),
+            }
+        }
+        Err(Error::from(format!(
+            "无法读取 QQ 音乐登录信息。请确认已登录 QQ 音乐；如果 macOS 拒绝访问，请在「系统设置 → 隐私与安全性 → 完全磁盘访问权限」中允许 QM Unlock，然后重新打开应用。详情：{}",
+            failures.join("；")
+        )))
+    }
+
+    fn load_from_file(path: &Path) -> Result<Credentials> {
+        let outer = Value::from_file(path).map_err(|e| Error::from(format!("读取失败: {e}")))?;
+        parse_credentials(&outer)
+    }
+
+    fn parse_credentials(outer: &Value) -> Result<Credentials> {
         let archived = outer
             .as_dictionary()
             .and_then(|dict| dict.get("AutoLoginUserInfo"))
@@ -122,6 +143,45 @@ mod macos {
             return Some(value.to_string());
         }
         None
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn parses_login_archive() {
+            let mut login = plist::Dictionary::new();
+            login.insert("strAuthst".into(), Value::String("test-auth".into()));
+            login.insert("nUserId".into(), Value::Integer(12345.into()));
+            login.insert("loginType".into(), Value::String("3".into()));
+            let mut archive = plist::Dictionary::new();
+            archive.insert(
+                "$objects".into(),
+                Value::Array(vec![Value::Dictionary(login)]),
+            );
+            let mut bytes = Vec::new();
+            Value::Dictionary(archive)
+                .to_writer_binary(&mut bytes)
+                .unwrap();
+            let mut outer = plist::Dictionary::new();
+            outer.insert("AutoLoginUserInfo".into(), Value::Data(bytes));
+
+            let credentials = parse_credentials(&Value::Dictionary(outer)).unwrap();
+            assert_eq!(credentials.uin, "12345");
+            assert_eq!(credentials.authst, "test-auth");
+            assert_eq!(credentials.login_type, "3");
+        }
+
+        #[test]
+        fn parses_selected_local_plist() {
+            let Ok(path) = std::env::var("QMUNLOCK_TEST_LOGIN_PLIST") else {
+                return;
+            };
+            let credentials = load_from_file(Path::new(&path)).unwrap();
+            assert!(!credentials.uin.is_empty());
+            assert!(!credentials.authst.is_empty());
+        }
     }
 }
 

@@ -6,7 +6,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import appIcon from "../src-tauri/icons/icon.svg";
-import { Check, ChevronRight, LoaderCircle, Moon, Plus, Sun, X } from "lucide-react";
+import { Check, ChevronRight, LoaderCircle, Moon, Plus, RefreshCw, Sun, X } from "lucide-react";
 import "./styles.css";
 
 window.addEventListener("error", (event) => {
@@ -350,7 +350,7 @@ export default function App() {
         return;
       }
       if (keyMode === "automatic" && !credentials?.available) {
-        setNotice("未检测到登录信息，请先登录 QQ 音乐，或切换为手动 ekey");
+        setNotice(credentials?.message || "正在检测 QQ 音乐登录信息，请稍后重试");
         setNoticeBad(true);
         return;
       }
@@ -543,10 +543,16 @@ export default function App() {
                 <button aria-pressed={keyMode === "manual"} onClick={() => setKeyMode("manual")}>手动</button>
               </div>
               {keyMode === "automatic" ? (
-                <div className="keyrow">
-                  <i className={credentials?.available ? "" : " bad"} />
-                  <span className="mono">{credentials?.available ? credentials.account_hint || "已登录" : "未登录"}</span>
-                </div>
+                <>
+                  <div className="keyrow">
+                    <i className={credentials?.available ? "" : " bad"} />
+                    <span className="mono">{credentials?.available ? credentials.account_hint || "已登录" : credentials ? "未读取到登录信息" : "检测中…"}</span>
+                    <button className="key-refresh" title="重新检测登录状态" aria-label="重新检测登录状态" onClick={() => void refreshCredentials()}>
+                      <RefreshCw size={13} />
+                    </button>
+                  </div>
+                  {credentials && !credentials.available && <p className="key-error">{credentials.message}</p>}
+                </>
               ) : (
                 <div className="keyfield">
                   <input
