@@ -17,6 +17,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 base64 = "0.22"
 dirs = "6"
+id3 = "1"
 plist = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }

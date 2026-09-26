@@ -2,11 +2,15 @@
 //!
 //! 说明：
 //! - 歌词与封面都按 footer 里的歌曲 MID 向 QQ 音乐公开接口取回，只读、不涉及账号凭据。
-//! - 封面写进 FLAC 的 PICTURE 元数据块，音频数据原样复制。
+//! - 封面写进 FLAC 的 PICTURE 元数据块，或 MP3 的 ID3 APIC 帧。
 //! - 访达图标是 macOS 独有机制（资源分支 + FinderInfo 标志），仅在 macOS 上执行；
 //!   其他平台该步骤为空操作，保持跨平台一致。
 
 use super::{Error, Result};
+use id3::{
+    frame::{Picture, PictureType},
+    Tag, TagLike, Version,
+};
 use serde_json::Value;
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -706,6 +710,42 @@ pub fn embed_cover_into_flac(path: &Path, image: &[u8], description: &str) -> Re
     Ok(())
 }
 
+/// 把封面写入 MP3 的 ID3 APIC（Attached Picture）帧。
+///
+/// Apple Music 和 Quick Look 都从音频文件的 ID3 标签读取封面，不能只依赖
+/// macOS 访达的自定义图标。保留现有标签，只替换正面封面，并使用兼容性较好的
+/// ID3v2.3 格式写回。
+pub fn embed_cover_into_mp3(path: &Path, image: &[u8], description: &str) -> Result<()> {
+    let mut tag = match Tag::read_from_path(path) {
+        Ok(tag) => tag,
+        // 没有 ID3 标签的 MP3 也应能补写封面；其他损坏/不可读错误则明确返回。
+        Err(id3::Error {
+            kind: id3::ErrorKind::NoTag,
+            ..
+        }) => Tag::new(),
+        Err(error) => return Err(Error::from(format!("读取 MP3 标签失败：{error}"))),
+    };
+    tag.remove_picture_by_type(PictureType::CoverFront);
+    tag.add_frame(Picture {
+        mime_type: "image/jpeg".to_owned(),
+        picture_type: PictureType::CoverFront,
+        description: description.to_owned(),
+        data: image.to_vec(),
+    });
+    tag.write_to_path(path, Version::Id3v23)
+        .map_err(|error| Error::from(format!("写入 MP3 封面失败：{error}")))?;
+
+    let check = Tag::read_from_path(path)
+        .map_err(|error| Error::from(format!("MP3 封面写入后无法校验：{error}")))?;
+    if !check
+        .pictures()
+        .any(|picture| picture.picture_type == PictureType::CoverFront && !picture.data.is_empty())
+    {
+        return Err(Error::from("MP3 封面写入校验失败：未找到正面封面"));
+    }
+    Ok(())
+}
+
 fn temporary_path(path: &Path) -> PathBuf {
     let mut name = path
         .file_name()
@@ -988,6 +1028,28 @@ mod tests {
         ]);
         data.extend_from_slice(&[0xFF, 0xD9]);
         data
+    }
+
+    #[test]
+    fn embeds_mp3_front_cover_and_replaces_existing_one() {
+        let dir = std::env::temp_dir().join(format!("qmunlock-tags-mp3-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("sample.mp3");
+        // id3 只处理标签区；这里不需要真实音频来验证 APIC 的写入和回读。
+        std::fs::write(&file, b"MP3-AUDIO-DATA").unwrap();
+
+        embed_cover_into_mp3(&file, &tiny_jpeg(), "第一张").unwrap();
+        embed_cover_into_mp3(&file, &tiny_jpeg(), "替换后的封面").unwrap();
+
+        let tag = Tag::read_from_path(&file).unwrap();
+        let covers: Vec<_> = tag
+            .pictures()
+            .filter(|picture| picture.picture_type == PictureType::CoverFront)
+            .collect();
+        assert_eq!(covers.len(), 1, "正面封面应替换而不是叠加");
+        assert_eq!(covers[0].description, "替换后的封面");
+        assert!(!covers[0].data.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

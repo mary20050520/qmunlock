@@ -1487,6 +1487,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "id3"
+version = "1.17.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef8be496a46468ba3d43690775aa3a79102ce4daf7d99e8072589aae1a3cd955"
+dependencies = [
+ "bitflags 2.13.1",
+ "byteorder",
+ "flate2",
+]
+
+[[package]]
 name = "ident_case"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2417,6 +2428,7 @@ version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
  "dirs",
+ "id3",
  "plist",
  "reqwest 0.12.28",
  "serde",

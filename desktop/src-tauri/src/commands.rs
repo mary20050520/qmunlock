@@ -408,7 +408,7 @@ async fn enhance_plain(
         let meta = tags::pick_matching_meta(&query, candidates, embedded.as_ref())?;
 
         let mut notes: Vec<String> = Vec::new();
-        // 「封面」= 内嵌封面 + 访达自定义图标（macOS），理由同 decorate_output
+        // 「封面」= FLAC / MP3 内嵌封面 + 访达自定义图标（macOS）。
         let image = if options.embed_cover {
             match tags::fetch_cover(&meta.album_mid).await {
                 Ok(image) => Some(image),
@@ -423,21 +423,28 @@ async fn enhance_plain(
 
         if options.embed_cover {
             if let Some(image) = image.as_ref() {
-                if format == "flac" {
-                    let description = if meta.singers.is_empty() {
-                        meta.title.clone()
-                    } else {
-                        format!("{} - {}", meta.title, meta.singers)
-                    };
-                    match tags::embed_cover_into_flac(&target, image, &description) {
-                        Ok(()) => notes.push(format!("封面《{}》", meta.album)),
-                        Err(error) => notes.push(format!("未写入封面：{error}")),
-                    }
+                let description = if meta.singers.is_empty() {
+                    meta.title.clone()
                 } else {
-                    notes.push(format!(
-                        "内嵌封面仅支持 FLAC，当前为 {}",
-                        format.to_uppercase()
-                    ));
+                    format!("{} - {}", meta.title, meta.singers)
+                };
+                let embedded_cover = match format.as_str() {
+                    "flac" => tags::embed_cover_into_flac(&target, image, &description),
+                    "mp3" => tags::embed_cover_into_mp3(&target, image, &description),
+                    _ => {
+                        notes.push(format!(
+                            "{} 暂不支持内嵌封面（已设置访达图标）",
+                            format.to_uppercase()
+                        ));
+                        Ok(())
+                    }
+                };
+                match embedded_cover {
+                    Ok(()) if matches!(format.as_str(), "flac" | "mp3") => {
+                        notes.push(format!("内嵌封面《{}》", meta.album));
+                    }
+                    Ok(()) => {}
+                    Err(error) => notes.push(format!("未写入封面：{error}")),
                 }
                 if cfg!(target_os = "macos") {
                     match tags::set_finder_icon(&target, image) {
@@ -589,9 +596,8 @@ async fn decorate_output(
         }
     };
 
-    // 「封面」= 内嵌封面 + 访达自定义图标（macOS）。
-    // 内嵌封面只在文件内部，访达里看不见；用户真正「看到封面」的是访达图标，
-    // 所以两者必须同属一个开关，否则勾了封面会像没生效。
+    // 「封面」= FLAC / MP3 内嵌封面 + 访达自定义图标（macOS）。Apple Music 与
+    // Quick Look 读取前者；访达图标则让不支持内嵌封面的格式也能在文件夹中识别。
     let image = if options.embed_cover {
         match tags::fetch_cover(&meta.album_mid).await {
             Ok(image) => Some(image),
@@ -606,21 +612,28 @@ async fn decorate_output(
 
     if options.embed_cover {
         if let Some(image) = image.as_ref() {
-            if format == "flac" {
-                let description = if meta.singers.is_empty() {
-                    meta.title.clone()
-                } else {
-                    format!("{} - {}", meta.title, meta.singers)
-                };
-                match tags::embed_cover_into_flac(output, image, &description) {
-                    Ok(()) => notes.push(format!("封面《{}》", meta.album)),
-                    Err(error) => notes.push(format!("未写入封面：{error}")),
-                }
+            let description = if meta.singers.is_empty() {
+                meta.title.clone()
             } else {
-                notes.push(format!(
-                    "内嵌封面仅支持 FLAC，当前为 {}",
-                    format.to_uppercase()
-                ));
+                format!("{} - {}", meta.title, meta.singers)
+            };
+            let embedded_cover = match format {
+                "flac" => tags::embed_cover_into_flac(output, image, &description),
+                "mp3" => tags::embed_cover_into_mp3(output, image, &description),
+                _ => {
+                    notes.push(format!(
+                        "{} 暂不支持内嵌封面（已设置访达图标）",
+                        format.to_uppercase()
+                    ));
+                    Ok(())
+                }
+            };
+            match embedded_cover {
+                Ok(()) if matches!(format, "flac" | "mp3") => {
+                    notes.push(format!("内嵌封面《{}》", meta.album));
+                }
+                Ok(()) => {}
+                Err(error) => notes.push(format!("未写入封面：{error}")),
             }
             if cfg!(target_os = "macos") {
                 match tags::set_finder_icon(output, image) {
@@ -844,4 +857,3 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
-
