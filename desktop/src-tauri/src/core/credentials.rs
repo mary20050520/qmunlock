@@ -108,7 +108,7 @@ mod macos {
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
                 unavailable_status(
                     "permission_required",
-                    "未获「完全磁盘访问权限」，无法读取 QQ 音乐最新登录信息。已打开系统设置：请允许 QM Unlock 后回到此处重新检测。",
+                    "未获「完全磁盘访问权限」，无法读取 QQ 音乐最新登录信息。请在系统设置中手动添加 QM Unlock 并打开开关，然后返回本应用重新检测。",
                 )
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => unavailable_status(

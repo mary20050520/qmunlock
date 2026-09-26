@@ -493,10 +493,11 @@ export default function App() {
                 {permissionRequired && (
                   <>
                     <ol>
-                      <li>在已打开的系统设置中允许 QM Unlock。</li>
-                      <li>回到这里，点击右上角的刷新按钮。</li>
+                      <li>在「完全磁盘访问权限」页点击左下角 <b>+</b>。</li>
+                      <li>选择「应用程序」中的 <b>QM Unlock.app</b>。</li>
+                      <li>打开 QM Unlock 右侧开关，再返回本应用自动重新检测。</li>
                     </ol>
-                    <button className="guide-action" onClick={openFullDiskAccessSettings}>前往授权</button>
+                    <button className="guide-action" onClick={openFullDiskAccessSettings}>打开系统设置</button>
                   </>
                 )}
                 <small>若刚重新登录 QQ 音乐，请回到本应用刷新状态；仍无法获取 ekey 时可改用手动 ekey。</small>
