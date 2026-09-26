@@ -16,6 +16,41 @@ pub fn open_full_disk_access_settings() -> std::result::Result<(), String> {
     credentials::open_full_disk_access_settings().map_err(|error| error.to_string())
 }
 
+/// 用系统默认浏览器打开项目主页。WebView 对普通的 `target="_blank"` 链接支持不一致，
+/// 尤其是 macOS 的 WKWebView 可能直接忽略它。
+#[tauri::command]
+pub fn open_external_url(url: String) -> std::result::Result<(), String> {
+    if url != "https://github.com/mary20050520/qmunlock" {
+        return Err("不允许打开未知链接".to_owned());
+    }
+
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = std::process::Command::new("open");
+        command.arg(&url);
+        command
+    };
+
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = std::process::Command::new("rundll32");
+        command.args(["url.dll,FileProtocolHandler", &url]);
+        command
+    };
+
+    #[cfg(target_os = "linux")]
+    let mut command = {
+        let mut command = std::process::Command::new("xdg-open");
+        command.arg(&url);
+        command
+    };
+
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("无法打开浏览器：{error}"))
+}
+
 /// 运行平台标识（`macos` / `windows` / `linux`），供前端门控平台专属功能。
 ///
 /// 前端不能靠 UA 或凭据接口推断平台：凭据读取失败时 platform 会是 unknown，
