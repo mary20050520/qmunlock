@@ -64,10 +64,24 @@ HYBRID="/tmp/qm-hybrid-$$.dmg"
 RW_DMG="/tmp/qm-rw-$$.dmg"
 DEV=""
 
+detach_image() {
+  local device="$1"
+  # macOS 的 Spotlight / diskimages-helper 有时会在刚访问完卷内文件时短暂占用它。
+  # GitHub 托管机上尤为常见；先温和重试，再作为最后手段强制卸载。
+  for _ in 1 2 3 4 5; do
+    if hdiutil detach "$device" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "   ⚠️  映像仍被占用，改用强制卸载：$device" >&2
+  hdiutil detach "$device" -force >/dev/null
+}
+
 cleanup() {
-  if [[ -n "$DEV" ]]; then hdiutil detach "$DEV" -force >/dev/null 2>&1 || true; fi
+  if [[ -n "$DEV" ]]; then detach_image "$DEV" >/dev/null 2>&1 || true; fi
   for m in "$MNT" "$VMNT"; do
-    if [[ -d "$m" ]]; then hdiutil detach "$m" -force >/dev/null 2>&1 || true; fi
+    if [[ -d "$m" ]]; then detach_image "$m" >/dev/null 2>&1 || true; fi
     rm -rf "$m"
   done
   rm -rf "$STAGE"
@@ -154,7 +168,7 @@ else
   exit 1
 fi
 rm -rf "$MNT/.fseventsd" 2>/dev/null || true                     # 清挂载产生的事件目录
-hdiutil detach "$DEV" >/dev/null
+detach_image "$DEV"
 DEV=""
 
 echo "⑤ 转只读压缩 UDZO…"
@@ -218,7 +232,7 @@ else
   echo "   · （未安装 ds_store，跳过 .DS_Store 回读）"
 fi
 
-hdiutil detach "$VMNT" >/dev/null
+detach_image "$VMNT"
 rm -rf "$VMNT"
 
 echo
