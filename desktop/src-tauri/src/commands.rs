@@ -430,7 +430,7 @@ async fn enhance_plain(
                 };
                 let embedded_cover = match format.as_str() {
                     "flac" => tags::embed_cover_into_flac(&target, image, &description),
-                    "mp3" => tags::embed_cover_into_mp3(&target, image, &description),
+                    "mp3" => tags::embed_cover_into_mp3(&target, image, &description, &meta),
                     _ => {
                         notes.push(format!(
                             "{} 暂不支持内嵌封面（已设置访达图标）",
@@ -619,7 +619,7 @@ async fn decorate_output(
             };
             let embedded_cover = match format {
                 "flac" => tags::embed_cover_into_flac(output, image, &description),
-                "mp3" => tags::embed_cover_into_mp3(output, image, &description),
+                "mp3" => tags::embed_cover_into_mp3(output, image, &description, &meta),
                 _ => {
                     notes.push(format!(
                         "{} 暂不支持内嵌封面（已设置访达图标）",
@@ -720,7 +720,18 @@ async fn write_lyrics(
                 .file_name()
                 .map(|value| value.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            format!("歌词 {name}")
+            if output
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("mp3"))
+            {
+                match tags::embed_lyrics_into_mp3(output, &lyric) {
+                    Ok(()) => format!("歌词 {name} · 已嵌入 MP3"),
+                    Err(error) => format!("歌词 {name} · MP3 内嵌失败：{error}"),
+                }
+            } else {
+                format!("歌词 {name}")
+            }
         }
         Err(error) => format!("未写入歌词：{error}"),
     }

@@ -8,7 +8,7 @@
 
 use super::{Error, Result};
 use id3::{
-    frame::{Picture, PictureType},
+    frame::{Lyrics, Picture, PictureType},
     Tag, TagLike, Version,
 };
 use serde_json::Value;
@@ -32,8 +32,16 @@ const PICTURE_TYPE_FRONT: u32 = 3;
 pub struct SongMeta {
     pub album_mid: String,
     pub album: String,
+    /// 专辑艺人；只有曲库明确返回时才写入，不用歌曲艺人猜测。
+    pub album_singers: String,
     pub title: String,
     pub singers: String,
+    /// 曲库公开的首发日期，可能是年或完整日期。
+    pub release_date: String,
+    /// 专辑内曲序；曲库没有提供时为 None。
+    pub track_number: Option<u32>,
+    /// 碟序；QQ 音乐的 `index_cd` 从 0 开始，写入标签时转为从 1 开始。
+    pub disc_number: Option<u32>,
     /// 曲库歌曲 ID，写入 QQ 音乐文件属性时需要
     pub song_id: u64,
     /// 歌曲 MID，抓歌词需要
@@ -42,6 +50,18 @@ pub struct SongMeta {
 
 fn http() -> reqwest::Client {
     reqwest::Client::new()
+}
+
+fn collect_names(value: Option<&Value>) -> String {
+    value
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(|item| item.get("name").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("、")
+        })
+        .unwrap_or_default()
 }
 
 async fn get_json(url: &str) -> Result<Value> {
@@ -84,16 +104,24 @@ pub async fn resolve_song(song_mid: &str) -> Result<SongMeta> {
         .or_else(|| song.get("name").and_then(Value::as_str))
         .unwrap_or_default()
         .to_owned();
-    let singers = song
-        .get("singer")
-        .and_then(Value::as_array)
-        .map(|list| {
-            list.iter()
-                .filter_map(|item| item.get("name").and_then(Value::as_str))
-                .collect::<Vec<_>>()
-                .join("、")
-        })
-        .unwrap_or_default();
+    let singers = collect_names(song.get("singer"));
+    let album_singers = collect_names(song.pointer("/album/singer"));
+    let release_date = song
+        .get("time_public")
+        .or_else(|| song.pointer("/album/time_public"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let track_number = song
+        .get("index_album")
+        .and_then(Value::as_u64)
+        .and_then(|number| u32::try_from(number).ok())
+        .filter(|number| *number > 0);
+    let disc_number = song
+        .get("index_cd")
+        .and_then(Value::as_u64)
+        .and_then(|number| u32::try_from(number).ok())
+        .map(|number| number.saturating_add(1));
     let song_id = song.get("id").and_then(Value::as_u64).unwrap_or_default();
     if album_mid.is_empty() {
         return Err(Error::from("曲库未返回专辑 MID"));
@@ -101,8 +129,12 @@ pub async fn resolve_song(song_mid: &str) -> Result<SongMeta> {
     Ok(SongMeta {
         album_mid,
         album,
+        album_singers,
         title,
         singers,
+        release_date,
+        track_number,
+        disc_number,
         song_id,
         song_mid: song_mid.to_owned(),
     })
@@ -141,22 +173,17 @@ fn meta_from_search_item(item: &Value) -> Option<SongMeta> {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
-    let singers = item
-        .get("singer")
-        .and_then(Value::as_array)
-        .map(|list| {
-            list.iter()
-                .filter_map(|s| s.get("name").and_then(Value::as_str))
-                .collect::<Vec<_>>()
-                .join("、")
-        })
-        .unwrap_or_default();
+    let singers = collect_names(item.get("singer"));
     let song_id = item.get("id").and_then(Value::as_u64).unwrap_or_default();
     Some(SongMeta {
         album_mid,
         album,
+        album_singers: String::new(),
         title,
         singers,
+        release_date: String::new(),
+        track_number: None,
+        disc_number: None,
         song_id,
         song_mid,
     })
@@ -713,9 +740,14 @@ pub fn embed_cover_into_flac(path: &Path, image: &[u8], description: &str) -> Re
 /// 把封面写入 MP3 的 ID3 APIC（Attached Picture）帧。
 ///
 /// Apple Music 和 Quick Look 都从音频文件的 ID3 标签读取封面，不能只依赖
-/// macOS 访达的自定义图标。保留现有标签，只替换正面封面，并使用兼容性较好的
-/// ID3v2.3 格式写回。
-pub fn embed_cover_into_mp3(path: &Path, image: &[u8], description: &str) -> Result<()> {
+/// macOS 访达的自定义图标。保留现有标签，只替换正面封面，并把 QQ 音乐明确返回的
+/// 曲目信息写入兼容性较好的 ID3v2.3 标签。
+pub fn embed_cover_into_mp3(
+    path: &Path,
+    image: &[u8],
+    description: &str,
+    meta: &SongMeta,
+) -> Result<()> {
     let mut tag = match Tag::read_from_path(path) {
         Ok(tag) => tag,
         // 没有 ID3 标签的 MP3 也应能补写封面；其他损坏/不可读错误则明确返回。
@@ -732,6 +764,29 @@ pub fn embed_cover_into_mp3(path: &Path, image: &[u8], description: &str) -> Res
         description: description.to_owned(),
         data: image.to_vec(),
     });
+    tag.set_title(meta.title.clone());
+    if !meta.singers.is_empty() {
+        tag.set_artist(meta.singers.clone());
+    }
+    if !meta.album.is_empty() {
+        tag.set_album(meta.album.clone());
+    }
+    if !meta.album_singers.is_empty() {
+        tag.set_album_artist(meta.album_singers.clone());
+    }
+    if let Some(track) = meta.track_number {
+        tag.set_track(track);
+    }
+    if let Some(disc) = meta.disc_number {
+        tag.set_disc(disc);
+    }
+    if let Some(year) = meta
+        .release_date
+        .get(0..4)
+        .and_then(|value| value.parse::<i32>().ok())
+    {
+        tag.set_year(year);
+    }
     tag.write_to_path(path, Version::Id3v23)
         .map_err(|error| Error::from(format!("写入 MP3 封面失败：{error}")))?;
 
@@ -742,6 +797,60 @@ pub fn embed_cover_into_mp3(path: &Path, image: &[u8], description: &str) -> Res
         .any(|picture| picture.picture_type == PictureType::CoverFront && !picture.data.is_empty())
     {
         return Err(Error::from("MP3 封面写入校验失败：未找到正面封面"));
+    }
+    Ok(())
+}
+
+/// 将 LRC 的逐行时间戳剥离，保留给 Apple Music 显示的文字内容。
+fn lrc_to_plain_text(lyric: &str) -> String {
+    lyric
+        .lines()
+        .filter_map(|line| {
+            let mut content = line.trim();
+            while let Some(rest) = content.strip_prefix('[') {
+                let Some(end) = rest.find(']') else {
+                    break;
+                };
+                let marker = &rest[..end];
+                if marker.chars().next().is_some_and(char::is_numeric) {
+                    content = rest[end + 1..].trim_start();
+                } else {
+                    break;
+                }
+            }
+            (!content.is_empty()).then_some(content)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 将歌词写入 MP3 的 ID3 USLT 帧，供 Apple Music 的歌词面板读取。
+pub fn embed_lyrics_into_mp3(path: &Path, lyric: &str) -> Result<()> {
+    let text = lrc_to_plain_text(lyric);
+    if text.is_empty() {
+        return Err(Error::from("歌词内容为空，未写入 MP3"));
+    }
+    let mut tag = match Tag::read_from_path(path) {
+        Ok(tag) => tag,
+        Err(id3::Error {
+            kind: id3::ErrorKind::NoTag,
+            ..
+        }) => Tag::new(),
+        Err(error) => return Err(Error::from(format!("读取 MP3 标签失败：{error}"))),
+    };
+    tag.remove("USLT");
+    tag.add_frame(Lyrics {
+        // 使用标准三字母码以兼容 ID3v2.3；正文按 Unicode 写入，不影响中文歌词。
+        lang: "eng".to_owned(),
+        description: String::new(),
+        text,
+    });
+    tag.write_to_path(path, Version::Id3v23)
+        .map_err(|error| Error::from(format!("写入 MP3 歌词失败：{error}")))?;
+    let check = Tag::read_from_path(path)
+        .map_err(|error| Error::from(format!("MP3 歌词写入后无法校验：{error}")))?;
+    if !check.lyrics().any(|item| !item.text.trim().is_empty()) {
+        return Err(Error::from("MP3 歌词写入校验失败：未找到歌词"));
     }
     Ok(())
 }
@@ -1037,9 +1146,21 @@ mod tests {
         let file = dir.join("sample.mp3");
         // id3 只处理标签区；这里不需要真实音频来验证 APIC 的写入和回读。
         std::fs::write(&file, b"MP3-AUDIO-DATA").unwrap();
+        let meta = SongMeta {
+            album_mid: "album-mid".into(),
+            album: "测试专辑".into(),
+            album_singers: "测试专辑艺人".into(),
+            title: "测试歌曲".into(),
+            singers: "测试歌手".into(),
+            release_date: "2024-05-01".into(),
+            track_number: Some(3),
+            disc_number: Some(2),
+            song_id: 1,
+            song_mid: "song-mid".into(),
+        };
 
-        embed_cover_into_mp3(&file, &tiny_jpeg(), "第一张").unwrap();
-        embed_cover_into_mp3(&file, &tiny_jpeg(), "替换后的封面").unwrap();
+        embed_cover_into_mp3(&file, &tiny_jpeg(), "第一张", &meta).unwrap();
+        embed_cover_into_mp3(&file, &tiny_jpeg(), "替换后的封面", &meta).unwrap();
 
         let tag = Tag::read_from_path(&file).unwrap();
         let covers: Vec<_> = tag
@@ -1049,6 +1170,30 @@ mod tests {
         assert_eq!(covers.len(), 1, "正面封面应替换而不是叠加");
         assert_eq!(covers[0].description, "替换后的封面");
         assert!(!covers[0].data.is_empty());
+        assert_eq!(tag.title(), Some("测试歌曲"));
+        assert_eq!(tag.artist(), Some("测试歌手"));
+        assert_eq!(tag.album(), Some("测试专辑"));
+        assert_eq!(tag.album_artist(), Some("测试专辑艺人"));
+        assert_eq!(tag.track(), Some(3));
+        assert_eq!(tag.disc(), Some(2));
+        assert_eq!(tag.year(), Some(2024));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn embeds_plain_lyrics_into_mp3() {
+        let dir = std::env::temp_dir().join(format!("qmunlock-lyrics-mp3-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("sample.mp3");
+        std::fs::write(&file, b"MP3-AUDIO-DATA").unwrap();
+
+        embed_lyrics_into_mp3(&file, "[00:01.00]第一行\n[00:02.50][00:03.00]第二行").unwrap();
+
+        let tag = Tag::read_from_path(&file).unwrap();
+        assert_eq!(
+            tag.lyrics().next().map(|item| item.text.as_str()),
+            Some("第一行\n第二行")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1072,8 +1217,12 @@ mod tests {
         let meta = SongMeta {
             album_mid: "000CLxSh3wxvBt".into(),
             album: "启示录".into(),
+            album_singers: "G.E.M.邓紫棋".into(),
             title: "GLORIA".into(),
             singers: "G.E.M.邓紫棋、某某".into(),
+            release_date: "2022-09-23".into(),
+            track_number: Some(1),
+            disc_number: Some(1),
             song_id: 370_870_352,
             song_mid: "001xM7yM3VfJqK".into(),
         };
@@ -1237,8 +1386,12 @@ mod tests {
         let meta = SongMeta {
             album_mid: "mid".into(),
             album: "启示录".into(),
+            album_singers: "G.E.M.邓紫棋".into(),
             title: "GLORIA".into(),
             singers: "G.E.M.邓紫棋".into(),
+            release_date: "2022-09-23".into(),
+            track_number: Some(1),
+            disc_number: Some(1),
             song_id: 1,
             song_mid: "mid".into(),
         };
@@ -1340,8 +1493,12 @@ mod tests {
         let wrong_title = SongMeta {
             album_mid: "a".into(),
             album: "启示录".into(),
+            album_singers: "G.E.M.邓紫棋".into(),
             title: "泡沫".into(),
             singers: "G.E.M.邓紫棋".into(),
+            release_date: "2022-09-23".into(),
+            track_number: Some(1),
+            disc_number: Some(1),
             song_id: 1,
             song_mid: "a".into(),
         };
@@ -1371,8 +1528,12 @@ mod tests {
                 SongMeta {
                     album_mid: "b".into(),
                     album: "启示录".into(),
+                    album_singers: "G.E.M.邓紫棋".into(),
                     title: "GLORIA".into(),
                     singers: "G.E.M.邓紫棋".into(),
+                    release_date: "2022-09-23".into(),
+                    track_number: Some(1),
+                    disc_number: Some(1),
                     song_id: 2,
                     song_mid: "b".into(),
                 },
