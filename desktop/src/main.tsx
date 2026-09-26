@@ -500,7 +500,7 @@ export default function App() {
                     <button className="guide-action" onClick={openFullDiskAccessSettings}>打开系统设置</button>
                   </>
                 )}
-                <small>若刚重新登录 QQ 音乐，请回到本应用刷新状态；仍无法获取 ekey 时可改用手动 ekey。</small>
+                <small>若刚重新登录 QQ 音乐，回到本应用后会自动刷新状态；仍无法获取 ekey 时可改用手动 ekey。</small>
               </section>
             </div>
           ) : (
