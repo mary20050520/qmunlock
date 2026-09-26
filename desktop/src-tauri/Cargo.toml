@@ -1,6 +1,6 @@
 [package]
 name = "qmunlock-desktop"
-version = "1.0.0"
+version = "2.0.0"
 description = "Cross-platform musicex decoder for files downloaded by the current user"
 authors = ["QM Unlock contributors"]
 edition = "2021"
