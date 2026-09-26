@@ -7,6 +7,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::check_credentials,
             commands::open_full_disk_access_settings,
+            commands::open_external_url,
             commands::os_platform,
             commands::get_file_info,
             commands::scan_paths,
