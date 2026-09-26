@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -22,6 +22,7 @@ window.addEventListener("unhandledrejection", (event) => {
 
 type CredentialStatus = {
   available: boolean;
+  state: string;
   platform: string;
   account_hint?: string;
   message: string;
@@ -134,6 +135,7 @@ export default function App() {
   const [libraryStatus, setLibraryStatus] = useState<LibraryStatus>();
   const [theme, setTheme] = useState<Theme>(initialTheme);
   const [noticeBad, setNoticeBad] = useState(false);
+  const permissionSettingsOpened = useRef(false);
 
   useEffect(() => {
     const root = document.getElementById("root");
@@ -171,17 +173,31 @@ export default function App() {
       .catch(() => setOs(""));
   }, []);
 
-  const refreshCredentials = useCallback(async () => {
+  const refreshCredentials = useCallback(async (requestPermission = false) => {
     try {
-      setCredentials(await invoke<CredentialStatus>("check_credentials"));
+      const status = await invoke<CredentialStatus>("check_credentials");
+      setCredentials(status);
+      // macOS 无法让应用自行授予完全磁盘访问权限；首次检测到缺失时，
+      // 自动打开准确的系统设置页面，授权开关仍由用户亲自确认。
+      if (requestPermission && status.state === "permission_required" && !permissionSettingsOpened.current) {
+        permissionSettingsOpened.current = true;
+        void invoke("open_full_disk_access_settings").catch(() => {});
+      }
     } catch {
-      setCredentials({ available: false, platform: "unknown", message: "无法读取登录状态" });
+      setCredentials({ available: false, state: "unavailable", platform: "unknown", message: "无法读取登录状态" });
     }
   }, []);
 
   useEffect(() => {
-    void refreshCredentials();
+    void refreshCredentials(true);
   }, [refreshCredentials]);
+
+  const openFullDiskAccessSettings = useCallback(() => {
+    void invoke("open_full_disk_access_settings").catch(() => {
+      setNotice("无法打开系统设置，请前往「隐私与安全性 → 完全磁盘访问权限」手动允许 QM Unlock");
+      setNoticeBad(true);
+    });
+  }, []);
 
   const refreshLibraryStatus = useCallback(async () => {
     try {
@@ -413,7 +429,9 @@ export default function App() {
   const keyReady = ctx === "plain" ? true : keyMode === "manual" ? manualKey.trim().length > 0 : Boolean(credentials?.available);
   const canStart = visiblePaths.length > 0 && keyReady && !running;
   const state = dragActive ? "drag" : paths.length ? "loaded" : "empty";
+  const permissionRequired = credentials?.state === "permission_required";
   const tabJobs = jobs.filter((row) => row.tab === ctx);
+  const failedJob = tabJobs.find((row) => !row.result.ok)?.result;
   const jobByPath = useMemo(() => {
     const map = new Map<string, DecryptResult>();
     for (const row of tabJobs) map.set(row.result.input, row.result);
@@ -479,6 +497,34 @@ export default function App() {
                 <button className="ghost" onClick={() => void chooseFiles()}>选择文件</button>
                 <button className="ghost" onClick={() => void chooseFolder()}>文件夹</button>
               </div>
+              <section className={`auth-guide${credentials?.available ? " ready" : ""}${permissionRequired ? " required" : ""}`} aria-label="自动解密状态与使用说明">
+                <div className="auth-guide-head">
+                  <i />
+                  <span>自动获取 ekey</span>
+                </div>
+                <strong>
+                  {credentials?.available
+                    ? `已就绪${credentials.account_hint ? ` · ${credentials.account_hint}` : ""}`
+                    : permissionRequired
+                      ? "需要完全磁盘访问权限"
+                      : credentials?.state === "qqmusic_not_found"
+                        ? "尚未找到 QQ 音乐"
+                        : credentials
+                          ? "尚未读取到登录信息"
+                          : "正在检测 QQ 音乐登录状态…"}
+                </strong>
+                <p>{credentials?.message || "首次启动会自动检查 QQ 音乐登录状态。"}</p>
+                {permissionRequired && (
+                  <>
+                    <ol>
+                      <li>在已打开的系统设置中允许 QM Unlock。</li>
+                      <li>回到这里，点击右上角的刷新按钮。</li>
+                    </ol>
+                    <button className="guide-action" onClick={openFullDiskAccessSettings}>前往授权</button>
+                  </>
+                )}
+                <small>若刚重新登录 QQ 音乐，请回到本应用刷新状态；仍无法获取 ekey 时可改用手动 ekey。</small>
+              </section>
             </div>
           ) : (
             <>
@@ -552,6 +598,7 @@ export default function App() {
                     </button>
                   </div>
                   {credentials && !credentials.available && <p className="key-error">{credentials.message}</p>}
+                  {failedJob?.error && <p className="key-error">解密失败：{failedJob.error}</p>}
                 </>
               ) : (
                 <div className="keyfield">

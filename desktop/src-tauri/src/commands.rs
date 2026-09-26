@@ -10,6 +10,12 @@ pub fn check_credentials() -> core::CredentialStatus {
     credentials::status()
 }
 
+/// 打开 macOS 的「完全磁盘访问权限」页；实际授权必须由用户在系统设置中确认。
+#[tauri::command]
+pub fn open_full_disk_access_settings() -> std::result::Result<(), String> {
+    credentials::open_full_disk_access_settings().map_err(|error| error.to_string())
+}
+
 /// 运行平台标识（`macos` / `windows` / `linux`），供前端门控平台专属功能。
 ///
 /// 前端不能靠 UA 或凭据接口推断平台：凭据读取失败时 platform 会是 unknown，
@@ -838,3 +844,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+

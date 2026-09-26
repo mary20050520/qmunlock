@@ -26,12 +26,18 @@ pub async fn fetch(
         .and_then(|value| value.as_str())
         .filter(|value| !value.is_empty());
     result.map(str::to_owned).ok_or_else(|| {
+        let request_code = response
+            .pointer("/req_1/code")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(-1);
+        let item_code = response
+            .pointer("/req_1/data/retcode")
+            .or_else(|| response.pointer("/req_1/data/midurlinfo/0/errcode"))
+            .and_then(|v| v.as_i64())
+            .map(|v| format!("，曲目状态 {v}"))
+            .unwrap_or_default();
         Error::from(format!(
-            "API 未返回 ekey：{}",
-            response
-                .pointer("/req_1/code")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(-1)
+            "QQ 音乐未返回 ekey（请求状态 {request_code}{item_code}）。读取到的登录凭据可能已过期，或无法访问 QQ 音乐的最新登录信息；请重新登录 QQ 音乐后重试。若仍失败，请在「系统设置 → 隐私与安全性 → 完全磁盘访问权限」中允许 QM Unlock，然后重新打开应用。"
         ))
     })
 }

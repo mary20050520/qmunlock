@@ -328,6 +328,27 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--mint); outl
   transition: .15s;
 }
 .ghost:hover { color: var(--ink); border-color: var(--rule2); background: var(--raised2); }
+.auth-guide {
+  width: min(440px, 100%);
+  margin-top: 26px;
+  padding: 13px 15px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--raised);
+  text-align: left;
+  box-shadow: var(--sh);
+}
+.auth-guide.ready { border-color: color-mix(in srgb, var(--mint) 34%, var(--rule)); }
+.auth-guide.required { border-color: var(--gold-bd); background: var(--gold-bg); }
+.auth-guide-head { display: flex; align-items: center; gap: 7px; margin-bottom: 7px; font-family: "JetBrains Mono", Menlo, monospace; font-size: 9px; color: var(--ink3); letter-spacing: .12em; text-transform: uppercase; }
+.auth-guide-head i { width: 6px; height: 6px; border-radius: 50%; background: var(--gold); }
+.auth-guide.ready .auth-guide-head i { background: var(--mint); }
+.auth-guide strong { display: block; font-size: 12px; font-weight: 600; color: var(--ink); }
+.auth-guide p { margin: 5px 0 0; font-size: 10.5px; line-height: 1.55; color: var(--ink2); }
+.auth-guide ol { margin: 9px 0 0; padding-left: 18px; font-size: 10.5px; line-height: 1.65; color: var(--ink2); }
+.auth-guide small { display: block; margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--rule); font-size: 9.5px; line-height: 1.5; color: var(--ink3); }
+.guide-action { margin-top: 10px; appearance: none; border: 1px solid var(--gold-bd); border-radius: 5px; padding: 6px 9px; background: transparent; color: var(--gold); font-size: 10px; font-weight: 600; }
+.guide-action:hover { background: var(--gold-bg); }
 .veil {
   position: absolute;
   inset: 8px;

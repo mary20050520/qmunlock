@@ -1,19 +1,36 @@
 use super::{CredentialStatus, Credentials, Error, Result};
 
 pub fn status() -> CredentialStatus {
-    match load() {
-        Ok(credentials) => CredentialStatus {
-            available: true,
-            platform: platform_name().into(),
-            account_hint: Some(mask_uin(&credentials.uin)),
-            message: "已读取当前用户的 QQ 音乐登录信息".into(),
-        },
-        Err(error) => CredentialStatus {
-            available: false,
-            platform: platform_name().into(),
-            account_hint: None,
-            message: error.to_string(),
-        },
+    #[cfg(target_os = "macos")]
+    {
+        macos::status()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        match load() {
+            Ok(credentials) => ready_status(credentials),
+            Err(error) => unavailable_status("unavailable", error.to_string()),
+        }
+    }
+}
+
+fn ready_status(credentials: Credentials) -> CredentialStatus {
+    CredentialStatus {
+        available: true,
+        state: "ready".into(),
+        platform: platform_name().into(),
+        account_hint: Some(mask_uin(&credentials.uin)),
+        message: "已读取 QQ 音乐当前登录信息；解密时会再向 QQ 音乐请求对应文件的 ekey。".into(),
+    }
+}
+
+fn unavailable_status(state: &str, message: impl Into<String>) -> CredentialStatus {
+    CredentialStatus {
+        available: false,
+        state: state.into(),
+        platform: platform_name().into(),
+        account_hint: None,
+        message: message.into(),
     }
 }
 
@@ -39,6 +56,17 @@ pub fn api_platform() -> &'static str {
         "20"
     }
 }
+
+/// macOS 不提供应用自行取得「完全磁盘访问权限」的 API；这里只能打开准确的
+/// 系统设置页面，由用户打开开关。访问受保护的 QQ 音乐容器前会先检测并引导。
+pub fn open_full_disk_access_settings() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::open_full_disk_access_settings()
+    }
+    #[cfg(not(target_os = "macos"))]
+    Err(Error::from("完全磁盘访问权限仅适用于 macOS"))
+}
 fn platform_name() -> &'static str {
     if cfg!(target_os = "windows") {
         "Windows"
@@ -60,26 +88,63 @@ fn mask_uin(value: &str) -> String {
 mod macos {
     use super::*;
     use plist::Value;
+    use std::fs::File;
     use std::io::Cursor;
     use std::path::Path;
+    use std::process::Command;
+
+    fn login_info_path() -> Result<std::path::PathBuf> {
+        Ok(dirs::home_dir()
+            .ok_or("找不到用户目录")?
+            .join("Library/Containers/com.tencent.QQMusicMac/Data/Library/Preferences/com.tencent.QQMusicMac.plist"))
+    }
+
+    pub fn status() -> CredentialStatus {
+        let path = match login_info_path() {
+            Ok(path) => path,
+            Err(error) => return unavailable_status("path_unavailable", error.to_string()),
+        };
+        match File::open(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                unavailable_status(
+                    "permission_required",
+                    "未获「完全磁盘访问权限」，无法读取 QQ 音乐最新登录信息。已打开系统设置：请允许 QM Unlock 后回到此处重新检测。",
+                )
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => unavailable_status(
+                "qqmusic_not_found",
+                "未找到 QQ 音乐的登录文件。请安装并登录 QQ 音乐后重新检测。",
+            ),
+            Err(error) => unavailable_status(
+                "read_failed",
+                format!("无法访问 QQ 音乐登录文件：{error}"),
+            ),
+            Ok(_) => match load_from_file(&path) {
+                Ok(credentials) => ready_status(credentials),
+                Err(error) => unavailable_status("login_unavailable", error.to_string()),
+            },
+        }
+    }
 
     pub fn load() -> Result<Credentials> {
-        let home = dirs::home_dir().ok_or("找不到用户目录")?;
-        let paths = [
-            home.join("Library/Containers/com.tencent.QQMusicMac/Data/Library/Preferences/com.tencent.QQMusicMac.plist"),
-            home.join("Library/Preferences/com.tencent.QQMusicMac.plist"),
-        ];
-        let mut failures = Vec::new();
-        for path in &paths {
-            match load_from_file(path) {
-                Ok(credentials) => return Ok(credentials),
-                Err(error) => failures.push(format!("{}: {error}", path.display())),
-            }
+        let path = login_info_path()?;
+        load_from_file(&path).map_err(|error| {
+            Error::from(format!(
+                "无法读取 QQ 音乐最新登录信息：{error}。请在「系统设置 → 隐私与安全性 → 完全磁盘访问权限」中允许 QM Unlock。"
+            ))
+        })
+    }
+
+    pub fn open_full_disk_access_settings() -> Result<()> {
+        let status = Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
+            .status()
+            .map_err(|error| Error::from(format!("无法打开系统设置：{error}")))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(Error::from("无法打开「完全磁盘访问权限」设置页面"))
         }
-        Err(Error::from(format!(
-            "无法读取 QQ 音乐登录信息。请确认已登录 QQ 音乐；如果 macOS 拒绝访问，请在「系统设置 → 隐私与安全性 → 完全磁盘访问权限」中允许 QM Unlock，然后重新打开应用。详情：{}",
-            failures.join("；")
-        )))
     }
 
     fn load_from_file(path: &Path) -> Result<Credentials> {

@@ -13,6 +13,8 @@ use std::path::Path;
 #[serde(rename_all = "camelCase")]
 pub struct CredentialStatus {
     pub available: bool,
+    /// 细分检测状态，前端据此给出可执行的处理步骤。
+    pub state: String,
     pub platform: String,
     pub account_hint: Option<String>,
     pub message: String,
