@@ -424,10 +424,13 @@ export default function App() {
           <a
             className="ico-btn"
             href="https://github.com/mary20050520/qmunlock"
-            target="_blank"
-            rel="noreferrer"
             title="GitHub"
             aria-label="在 GitHub 打开 QM Unlock"
+            onClick={(event) => {
+              // WKWebView 不保证处理 target="_blank"，交给原生层用系统浏览器打开。
+              event.preventDefault();
+              void invoke("open_external_url", { url: "https://github.com/mary20050520/qmunlock" });
+            }}
           >
             <Github size={14} />
           </a>
