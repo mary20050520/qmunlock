@@ -89,22 +89,63 @@ mod macos {
     use super::*;
     use plist::Value;
     use std::fs::File;
-    use std::io::Cursor;
-    use std::path::Path;
+    use std::io::{self, Cursor};
+    use std::path::{Path, PathBuf};
     use std::process::Command;
+    use std::time::SystemTime;
 
-    fn login_info_path() -> Result<std::path::PathBuf> {
-        Ok(dirs::home_dir()
-            .ok_or("找不到用户目录")?
-            .join("Library/Containers/com.tencent.QQMusicMac/Data/Library/Preferences/com.tencent.QQMusicMac.plist"))
+    const LOGIN_PLIST: &str = "Preferences/com.tencent.QQMusicMac.plist";
+
+    /// 旧版 QQ 音乐运行在沙盒中，登录信息写在容器里；新版（11.x 起）不再沙盒化，
+    /// 直接写入 ~/Library/Preferences。两处都要检查。
+    fn login_info_candidates() -> Result<Vec<PathBuf>> {
+        let library = dirs::home_dir().ok_or("找不到用户目录")?.join("Library");
+        Ok(vec![
+            library
+                .join("Containers/com.tencent.QQMusicMac/Data/Library")
+                .join(LOGIN_PLIST),
+            library.join(LOGIN_PLIST),
+        ])
+    }
+
+    /// 选出可读取的登录文件。升级后两处可能同时存在（旧容器残留），取最近修改的那个；
+    /// 都不可读时返回最有参考价值的错误（权限错误优先于不存在）。
+    fn select_login_info(candidates: &[PathBuf]) -> io::Result<PathBuf> {
+        let mut best: Option<(SystemTime, &PathBuf)> = None;
+        let mut failure: Option<io::Error> = None;
+        for path in candidates {
+            match File::open(path).and_then(|file| file.metadata()) {
+                Ok(metadata) => {
+                    let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                    if best.is_none_or(|(newest, _)| modified > newest) {
+                        best = Some((modified, path));
+                    }
+                }
+                Err(error) => {
+                    let replace = failure.as_ref().is_none_or(|previous| {
+                        previous.kind() == io::ErrorKind::NotFound
+                            && error.kind() != io::ErrorKind::NotFound
+                    });
+                    if replace {
+                        failure = Some(error);
+                    }
+                }
+            }
+        }
+        best.map(|(_, path)| path.clone())
+            .ok_or_else(|| failure.unwrap_or_else(|| io::Error::from(io::ErrorKind::NotFound)))
+    }
+
+    fn login_info_path() -> Result<PathBuf> {
+        Ok(select_login_info(&login_info_candidates()?)?)
     }
 
     pub fn status() -> CredentialStatus {
-        let path = match login_info_path() {
-            Ok(path) => path,
+        let candidates = match login_info_candidates() {
+            Ok(candidates) => candidates,
             Err(error) => return unavailable_status("path_unavailable", error.to_string()),
         };
-        match File::open(&path) {
+        match select_login_info(&candidates) {
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
                 unavailable_status(
                     "permission_required",
@@ -119,7 +160,7 @@ mod macos {
                 "read_failed",
                 format!("无法访问 QQ 音乐登录文件：{error}"),
             ),
-            Ok(_) => match load_from_file(&path) {
+            Ok(path) => match load_from_file(&path) {
                 Ok(credentials) => ready_status(credentials),
                 Err(error) => unavailable_status("login_unavailable", error.to_string()),
             },
@@ -236,6 +277,59 @@ mod macos {
             assert_eq!(credentials.uin, "12345");
             assert_eq!(credentials.authst, "test-auth");
             assert_eq!(credentials.login_type, "3");
+        }
+
+        fn temp_dir(name: &str) -> PathBuf {
+            let dir = std::env::temp_dir().join(format!(
+                "qmunlock-credentials-{name}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            dir
+        }
+
+        #[test]
+        fn selects_non_sandboxed_plist_when_container_missing() {
+            let dir = temp_dir("fallback");
+            let container = dir.join("container.plist");
+            let preferences = dir.join("preferences.plist");
+            std::fs::write(&preferences, b"").unwrap();
+
+            let selected = select_login_info(&[container, preferences.clone()]).unwrap();
+            assert_eq!(selected, preferences);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn selects_most_recently_modified_plist() {
+            let dir = temp_dir("newest");
+            let older = dir.join("older.plist");
+            let newer = dir.join("newer.plist");
+            std::fs::write(&older, b"").unwrap();
+            std::fs::write(&newer, b"").unwrap();
+            let past = SystemTime::now() - std::time::Duration::from_secs(3600);
+            File::options()
+                .write(true)
+                .open(&older)
+                .unwrap()
+                .set_modified(past)
+                .unwrap();
+
+            assert_eq!(
+                select_login_info(&[older.clone(), newer.clone()]).unwrap(),
+                newer
+            );
+            assert_eq!(select_login_info(&[newer.clone(), older]).unwrap(), newer);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn reports_not_found_when_no_candidate_exists() {
+            let dir = temp_dir("missing");
+            let error = select_login_info(&[dir.join("a.plist"), dir.join("b.plist")]).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::NotFound);
+            let _ = std::fs::remove_dir_all(&dir);
         }
 
         #[test]
