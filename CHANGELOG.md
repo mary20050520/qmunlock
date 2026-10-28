@@ -4,6 +4,12 @@ All notable changes to QM Unlock are documented here.
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-10-28
+
+### Fixed
+
+- Detect QQ Music 11.x login credentials from `~/Library/Preferences` as well as the legacy sandbox container, preferring the most recently modified readable plist.
+
 ## [2.2.0] - 2026-10-12
 
 ### Added
