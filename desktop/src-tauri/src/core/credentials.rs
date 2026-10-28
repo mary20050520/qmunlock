@@ -132,6 +132,11 @@ mod macos {
                 }
             }
         }
+        // 某个候选因权限被拒，说明它存在却读不了，无法判断它是否比另一个更新。
+        // 若静默回退到另一个（可能是过期的）文件，状态会显示正常，实际取到的却是旧凭据。
+        if let Some(error) = failure.take_if(|e| e.kind() == io::ErrorKind::PermissionDenied) {
+            return Err(error);
+        }
         best.map(|(_, path)| path.clone())
             .ok_or_else(|| failure.unwrap_or_else(|| io::Error::from(io::ErrorKind::NotFound)))
     }
@@ -140,26 +145,38 @@ mod macos {
         Ok(select_login_info(&login_info_candidates()?)?)
     }
 
+    /// 探测当前进程是否拥有「完全磁盘访问权限」：用户级 TCC.db 只有授权后才能打开，
+    /// 未授权时系统返回 PermissionDenied。沙盒版与非沙盒版 QQ 音乐都以此为准，
+    /// 避免读登录文件时因候选文件可读性不同而误判。
+    fn has_full_disk_access() -> bool {
+        let Some(home) = dirs::home_dir() else {
+            return true;
+        };
+        let probe = home.join("Library/Application Support/com.apple.TCC/TCC.db");
+        !matches!(File::open(probe), Err(error) if error.kind() == io::ErrorKind::PermissionDenied)
+    }
+
+    const PERMISSION_MESSAGE: &str = "未获「完全磁盘访问权限」，无法读取 QQ 音乐最新登录信息。请在系统设置中手动添加 QM Unlock 并打开开关（更新版本后旧授权会失效，需先用 − 删除旧条目再重新添加），然后返回本应用重新检测。";
+
     pub fn status() -> CredentialStatus {
+        if !has_full_disk_access() {
+            return unavailable_status("permission_required", PERMISSION_MESSAGE);
+        }
         let candidates = match login_info_candidates() {
             Ok(candidates) => candidates,
             Err(error) => return unavailable_status("path_unavailable", error.to_string()),
         };
         match select_login_info(&candidates) {
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-                unavailable_status(
-                    "permission_required",
-                    "未获「完全磁盘访问权限」，无法读取 QQ 音乐最新登录信息。请在系统设置中手动添加 QM Unlock 并打开开关（更新版本后旧授权会失效，需先用 − 删除旧条目再重新添加），然后返回本应用重新检测。",
-                )
+                unavailable_status("permission_required", PERMISSION_MESSAGE)
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => unavailable_status(
                 "qqmusic_not_found",
                 "未找到 QQ 音乐的登录文件。请安装并登录 QQ 音乐后重新检测。",
             ),
-            Err(error) => unavailable_status(
-                "read_failed",
-                format!("无法访问 QQ 音乐登录文件：{error}"),
-            ),
+            Err(error) => {
+                unavailable_status("read_failed", format!("无法访问 QQ 音乐登录文件：{error}"))
+            }
             Ok(path) => match load_from_file(&path) {
                 Ok(credentials) => ready_status(credentials),
                 Err(error) => unavailable_status("login_unavailable", error.to_string()),
@@ -168,6 +185,9 @@ mod macos {
     }
 
     pub fn load() -> Result<Credentials> {
+        if !has_full_disk_access() {
+            return Err(Error::from(PERMISSION_MESSAGE));
+        }
         let path = login_info_path()?;
         load_from_file(&path).map_err(|error| {
             Error::from(format!(
@@ -322,6 +342,25 @@ mod macos {
             );
             assert_eq!(select_login_info(&[newer.clone(), older]).unwrap(), newer);
             let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn permission_denied_candidate_is_not_masked_by_fallback() {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = temp_dir("denied");
+            let blocked = dir.join("blocked.plist");
+            let readable = dir.join("readable.plist");
+            std::fs::write(&blocked, b"").unwrap();
+            std::fs::write(&readable, b"").unwrap();
+            std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+            let result = select_login_info(&[blocked.clone(), readable]);
+            std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let _ = std::fs::remove_dir_all(&dir);
+            // root 不受文件权限限制，此时无法构造权限错误
+            if let Err(error) = result {
+                assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            }
         }
 
         #[test]

@@ -4,6 +4,13 @@ All notable changes to QM Unlock are documented here.
 
 ## [Unreleased]
 
+## [2.2.2] - 2026-10-29
+
+### Fixed
+
+- Check Full Disk Access up front on macOS and show the permission guidance when it is missing, for both sandboxed and non-sandboxed QQ Music.
+- Stop silently falling back to a stale `~/Library/Preferences` login plist when the sandbox container plist is permission-denied, which made detection report ready while ekey fetching failed.
+
 ## [2.2.1] - 2026-10-28
 
 ### Fixed
