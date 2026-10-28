@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build-ffmpeg:
-    runs-on: macos-14
+    runs-on: macos-15
     defaults:
       run:
         working-directory: desktop
@@ -28,7 +28,7 @@ jobs:
 
   bundle-macos:
     needs: build-ffmpeg
-    runs-on: macos-14
+    runs-on: macos-15
     strategy:
       fail-fast: false
       matrix:
