@@ -1,7 +1,8 @@
 """从 QQ音乐 Mac 的 plist 读取 API 认证凭据（uin + authst）。
 
-凭据在：
+凭据在（旧版沙盒 / 新版 11.x 非沙盒，两处都可能存在，取最近修改的）：
   ~/Library/Containers/com.tencent.QQMusicMac/Data/Library/Preferences/com.tencent.QQMusicMac.plist
+  ~/Library/Preferences/com.tencent.QQMusicMac.plist
   → 键 AutoLoginUserInfo（NSKeyedArchiver 二进制）→ 内含 UserInfo 对象：
       nUserId / strUserAccount : QQ UIN
       strAuthst                : API 认证令牌（调 GetEVkey 必需）
@@ -14,10 +15,21 @@ import os
 import plistlib
 from plistlib import UID
 
-DEFAULT_PLIST = os.path.expanduser(
-    "~/Library/Containers/com.tencent.QQMusicMac/"
-    "Data/Library/Preferences/com.tencent.QQMusicMac.plist"
-)
+CANDIDATE_PLISTS = [
+    os.path.expanduser(
+        "~/Library/Containers/com.tencent.QQMusicMac/"
+        "Data/Library/Preferences/com.tencent.QQMusicMac.plist"
+    ),
+    os.path.expanduser("~/Library/Preferences/com.tencent.QQMusicMac.plist"),
+]
+
+
+def find_plist(candidates=CANDIDATE_PLISTS):
+    """返回存在的候选中最近修改的那个；都不存在时返回第一个（用于报错提示）。"""
+    existing = [p for p in candidates if os.path.exists(p)]
+    if not existing:
+        return candidates[0]
+    return max(existing, key=os.path.getmtime)
 
 
 def _resolve(objs, x):
@@ -27,11 +39,12 @@ def _resolve(objs, x):
     return x
 
 
-def get_credentials(plist_path=DEFAULT_PLIST):
+def get_credentials(plist_path=None):
     """返回 {'uin','authst','loginType','openid','refresh_key'}。
 
     找不到凭据时抛 CredentialsError。
     """
+    plist_path = plist_path or find_plist()
     if not os.path.exists(plist_path):
         raise CredentialsError(f"plist 不存在: {plist_path}（QQ音乐 没装/没登录过？）")
     with open(plist_path, 'rb') as f:
